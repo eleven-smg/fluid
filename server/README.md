@@ -40,6 +40,8 @@ Optional:
 - `STELLAR_NETWORK_PASSPHRASE` - Network passphrase (default: Testnet)
 - `STELLAR_HORIZON_URL` - Horizon URL for submission
 - `PORT` - Server port (default: 3000)
+- `FLUID_RATE_LIMIT_WINDOW_MS` - Rate limit window in milliseconds (default: 60000)
+- `FLUID_RATE_LIMIT_MAX` - Max requests per window per IP (default: 5)
 
 Mock API keys for local development:
 - `fluid-free-demo-key` - Free tier, 2 requests per minute
