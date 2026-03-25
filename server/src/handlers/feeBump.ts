@@ -91,7 +91,19 @@ export async function feeBumpHandler(
       );
     }
 
-    if ("feeBumpTransaction" in innerTransaction) {
+    const innerTransactionAny = innerTransaction as any;
+    const isAlreadyFeeBumped =
+      innerTransaction instanceof StellarSdk.FeeBumpTransaction ||
+      innerTransactionAny?.type === "fee-bump" ||
+      innerTransactionAny?.feeBumpTransaction != null ||
+      (typeof innerTransactionAny === "object" &&
+        "feeBumpTransaction" in innerTransactionAny);
+
+    if (isAlreadyFeeBumped) {
+      // Needed for security auditing / ops visibility: double-bump attempts are rejected early.
+      console.warn(
+        "Rejected fee-bump request: Cannot fee-bump an already fee-bumped transaction",
+      );
       return next(
         new AppError(
           "Cannot fee-bump an already fee-bumped transaction",
