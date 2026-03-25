@@ -2,7 +2,7 @@
 
 Fluid enables gasless Stellar transactions by abstracting network fees. **The core purpose is to allow applications to let users pay with the token they're spending (e.g., USDC) without the application needing to worry about gas abstraction or requiring users to hold XLM for fees.**
 
-Users sign their transactions locally, and Fluid wraps them in fee-bump transactions to pay network fees in XLM on their behalf.
+Users sign their transactions locally, and Fluid wraps them in fee-bump transactions to pay network fees in XLM on their behalf. Alongside the existing TypeScript services, the repo now includes a Rust `fluid-server` crate that exposes a WASM signing module for Stellar transaction envelopes.
 
 ## Purpose
 
@@ -74,7 +74,31 @@ fluid/
 │   ├── src/
 │   │   └── index.ts
 │   └── package.json
+├── fluid-server/        Rust server and WASM signing module
 └── README.md
+```
+
+## Rust WASM Signer
+
+The `fluid-server/` crate exposes a `signTransactionXdr` WASM entrypoint plus helper exports for:
+
+- deriving a Stellar public key from a secret seed
+- hashing unsigned transaction envelopes with a network passphrase
+- appending an ed25519 signature to a transaction envelope
+
+The demo app in `fluid-server/wasm-demo/` builds a Stellar transaction in JavaScript, signs it through the Rust WASM module, and compares the result against the official Stellar JavaScript SDK.
+
+### Rust/WASM Development
+
+```bash
+cd fluid-server
+cargo test --lib
+wasm-pack build --release --target web --out-dir pkg/web
+wasm-pack build --release --target nodejs --out-dir pkg/node
+cd wasm-demo
+npm ci
+npm run test:node
+npm run test:browser
 ```
 
 ## Server Configuration
@@ -180,6 +204,7 @@ const result = await server.submitTransaction(feeBumpTx);
 - Open Hosting: Anyone can run their own Fluid instance
 - TypeScript: Type-safe code for both server and client
 - Node.js: Easy to deploy and maintain
+- Rust/WASM: Optional signing pipeline for browser or Node runtimes
 
 ## Security Notes
 
