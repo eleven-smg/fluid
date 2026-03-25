@@ -44,3 +44,5 @@ target/
 # Test coverage
 coverage/
 .nyc_output/
+issue.md
+pr.md
