@@ -10,6 +10,7 @@ import { checkTenantDailyQuota } from "../services/quota";
 import { calculateFeeBumpFee } from "../utils/feeCalculator";
 import { getHorizonFailoverClient } from "../horizon/failoverClient";
 import { transactionStore } from "../workers/transactionStore";
+import { nativeSigner } from "../signing/native";
 
 interface FeeBumpResponse {
   xdr: string;
@@ -63,6 +64,50 @@ export async function feeBumpHandler(
         );
       }
 
+      // Preflight simulation for Soroban transactions
+      const isSoroban = innerTransaction.operations.some(
+        (op: any) =>
+          ["invokeHostFunction", "extendFootprintTtl", "restoreFootprint"].includes(op.type)
+      );
+
+      if (isSoroban) {
+        if (!config.stellarRpcUrl) {
+          return next(
+            new AppError(
+              "Soroban transaction requires STELLAR_RPC_URL for preflight simulation",
+              400,
+              "MISSING_RPC_URL"
+            )
+          );
+        }
+
+        try {
+          console.log("[soroban] preflight simulation started");
+          const updatedXdr = await nativeSigner.preflightSoroban(
+            config.stellarRpcUrl,
+            body.xdr
+          );
+          
+          // Use the updated XDR containing returned footprints and corrected resource fees
+          innerTransaction = StellarSdk.TransactionBuilder.fromXDR(
+            updatedXdr,
+            config.networkPassphrase
+          ) as any;
+          
+          console.log("[soroban] preflight simulation successful, transaction updated with correct resource fees and footprints");
+        } catch (simError: any) {
+          console.error("[soroban] simulation failed:", simError.message);
+          // Handle simulation failures as suggested: rejecting the bump request
+          return next(
+            new AppError(
+              `Soroban simulation failed: ${simError.message}. The transaction would fail on-chain or out of gas.`,
+              400,
+              "SIMULATION_FAILED"
+            )
+          );
+        }
+      }
+
       if (!innerTransaction.signatures || innerTransaction.signatures.length === 0) {
         return next(
           new AppError(
@@ -96,11 +141,18 @@ export async function feeBumpHandler(
 
       const tenant = syncTenantFromApiKey(apiKeyConfig);
       const operationCount = innerTransaction.operations?.length || 0;
-      const feeAmount = calculateFeeBumpFee(
+      const innerFee = parseInt(innerTransaction.fee || "0", 10);
+      
+      const calculatedBaseFee = calculateFeeBumpFee(
         operationCount,
         config.baseFee,
         config.feeMultiplier
       );
+
+      // Fee-bump fee must be higher than the inner transaction fee.
+      // For Soroban, the inner transaction fee includes resource fees returned by simulation.
+      const feeAmount = Math.max(calculatedBaseFee, innerFee + config.baseFee);
+      
       const quotaCheck = checkTenantDailyQuota(tenant, feeAmount);
 
       if (!quotaCheck.allowed) {

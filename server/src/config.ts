@@ -35,6 +35,7 @@ export interface Config {
   rateLimitWindowMs: number;
   rateLimitMax: number;
   allowedOrigins: string[];
+  stellarRpcUrl?: string;
 }
 
 function parseCommaSeparatedList(value?: string): string[] {
@@ -220,6 +221,7 @@ export function loadConfig(): Config {
     rateLimitWindowMs,
     rateLimitMax,
     allowedOrigins,
+    stellarRpcUrl: process.env.STELLAR_RPC_URL,
   };
 }
 

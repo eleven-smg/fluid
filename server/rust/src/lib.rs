@@ -10,6 +10,10 @@ use vaultrs_login::engines::approle::AppRoleLogin;
 use vaultrs_login::LoginClient;
 use zeroize::Zeroizing;
 use std::sync::Once;
+use reqwest::Client;
+use std::time::Duration;
+use stellar_xdr::curr::{Limits, ReadXdr, TransactionEnvelope, WriteXdr, SorobanTransactionData};
+use base64::{engine::general_purpose, Engine as _};
 
 static TOKIO_INIT: Once = Once::new();
 
@@ -226,4 +230,117 @@ pub async fn sign_payload_from_vault(
     .map_err(map_join_error)??;
 
     Ok(Buffer::from(signature))
+}
+
+#[derive(serde::Serialize)]
+struct JsonRpcRequest {
+    jsonrpc: String,
+    id: u16,
+    method: String,
+    params: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+struct SimulateResponse {
+    result: Option<SimulateResult>,
+    error: Option<SimulateError>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct SimulateResult {
+    #[serde(rename = "transactionData")]
+    pub transaction_data: Option<String>,
+    #[serde(rename = "minResourceFee")]
+    pub min_resource_fee: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SimulateError {
+    code: i32,
+    message: String,
+}
+
+#[napi]
+pub async fn preflight_soroban(
+    rpc_url: String,
+    transaction_xdr: String,
+) -> Result<String> {
+    initialize_optimized_tokio_runtime();
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| Error::from_reason(format!("failed to initialize HTTP client: {e}")))?;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: 1,
+        method: "simulateTransaction".to_string(),
+        params: serde_json::json!([transaction_xdr]),
+    };
+
+    println!("[preflight] simulating transaction on {}", rpc_url);
+
+    let response: SimulateResponse = client
+        .post(&rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| Error::from_reason(format!("RPC request failed: {e}")))?
+        .json()
+        .await
+        .map_err(|e| Error::from_reason(format!("failed to parse RPC response: {e}")))?;
+
+    if let Some(error) = response.error {
+        return Err(Error::from_reason(format!(
+            "Simulation failed: {} (code: {})",
+            error.message, error.code
+        )));
+    }
+
+    let result = response.result.ok_or_else(|| {
+        Error::from_reason("RPC response missing both result and error".to_string())
+    })?;
+
+    let updated_data_base64 = result.transaction_data.as_ref().ok_or_else(|| {
+        Error::from_reason("Simulation did not return updated transactionData".to_string())
+    })?;
+
+    let min_resource_fee_pulsar = result
+        .min_resource_fee
+        .as_ref()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    println!("[preflight] simulation result: min_resource_fee={} stroops", min_resource_fee_pulsar);
+
+    // Update the original transaction with returned footprints and fee.
+    let mut envelope = TransactionEnvelope::from_xdr_base64(&transaction_xdr, Limits::none())
+        .map_err(|e| Error::from_reason(format!("failed to parse transaction XDR: {e}")))?;
+
+    let updated_soroban_data_raw = SorobanTransactionData::from_xdr_base64(&updated_data_base64, Limits::none())
+        .map_err(|e| Error::from_reason(format!("failed to parse updated Soroban data: {e}")))?;
+
+    match &mut envelope {
+        TransactionEnvelope::Tx(v1_envelope) => {
+            let tx = &mut v1_envelope.tx;
+            // Update resource data
+            tx.ext = stellar_xdr::curr::TransactionExt::V1(updated_soroban_data_raw);
+            
+            // Automatically update the transaction's resource fees based on the simulation result.
+            // We ensure the fee is at least the min_resource_fee returned by simulation.
+            let current_fee = u32::from(tx.fee);
+            if current_fee < min_resource_fee_pulsar {
+                 tx.fee = stellar_xdr::curr::Uint32::from(min_resource_fee_pulsar);
+                 println!("[preflight] updated transaction fee from {} to {} stroops", current_fee, min_resource_fee_pulsar);
+            }
+        }
+        _ => return Err(Error::from_reason("Only Transaction v1 (non-fee-bump) envelopes are supported for preflight".to_string())),
+    }
+
+    let updated_xdr = envelope
+        .to_xdr_base64(Limits::none())
+        .map_err(|e| Error::from_reason(format!("failed to serialize updated transaction: {e}")))?;
+
+    Ok(updated_xdr)
 }
