@@ -113,7 +113,7 @@ export async function feeBumpHandler(
       );
     }
 
-    const baseFeeAmount = Math.floor(config.baseFee * config.feeMultiplier);
+    //const baseFeeAmount = Math.floor(config.baseFee * config.feeMultiplier);
 
     // Use extracted utility for correct fee calculation
     const apiKeyConfig = res.locals.apiKey as ApiKeyConfig | undefined;
@@ -124,7 +124,7 @@ export async function feeBumpHandler(
       return;
     }
     // Extract operation count safely
-    const operationCount = innerTransaction.operations?.length || 0;
+    
     const feeAmount = calculateFeeBumpFee(
   innerTransaction,
   config.baseFee,

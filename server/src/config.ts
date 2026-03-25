@@ -1,4 +1,4 @@
-import StellarSdk from "@stellar/stellar-sdk";
+import * as StellarSdk from "@stellar/stellar-sdk";
 
 export interface FeePayerAccount {
   publicKey: string;
@@ -46,6 +46,7 @@ export function loadConfig(): Config {
     process.env.FLUID_RATE_LIMIT_WINDOW_MS || "60000",
     10
   );
+
   const rateLimitMax = parseInt(process.env.FLUID_RATE_LIMIT_MAX || "5", 10);
 
   const baseFee = parseInt(process.env.FLUID_BASE_FEE || "100", 10);
@@ -108,8 +109,6 @@ export function loadConfig(): Config {
 
     const feePayerAccounts: FeePayerAccount[] = vaultPublicKeys.map(
       (publicKey, i) => {
-        // We only need the public key to build the fee-bump transaction;
-        // the Rust signer will fetch the private key from Vault at runtime.
         const keypair = StellarSdk.Keypair.fromPublicKey(publicKey);
         return {
           publicKey,
@@ -128,6 +127,8 @@ export function loadConfig(): Config {
       feeMultiplier,
       networkPassphrase,
       horizonUrl,
+      maxXdrSize: 10240,
+      maxOperations: 100,
       allowedOrigins,
       rateLimitWindowMs,
       rateLimitMax,
@@ -135,15 +136,19 @@ export function loadConfig(): Config {
     };
   }
 
-  // Support comma-separated list of secrets
+  // ✅ FIX: define rawSecrets
+  const rawSecrets = process.env.FLUID_FEE_PAYER_SECRET || "";
+
   const secrets = rawSecrets
     .split(",")
-    .map((s) => s.trim())
+    .map((s: string) => s.trim())
     .filter(Boolean);
+
   if (secrets.length === 0) {
     throw new Error("FLUID_FEE_PAYER_SECRET must contain at least one secret");
-  // Env fallback is only used when the secret env var is explicitly configured.
-  // This is useful for local development; production should use Vault.
+  }
+
+  // ✅ FIX: close previous if block
   if (feePayerSecretsEnv.length === 0) {
     throw new Error(
       "No fee payer secrets configured. Provide either Vault settings (VAULT_ADDR + token/approle + FLUID_FEE_PAYER_VAULT_SECRET_PATHS + FLUID_FEE_PAYER_PUBLIC_KEYS) or set FLUID_FEE_PAYER_SECRET for env-based development."
@@ -159,16 +164,8 @@ export function loadConfig(): Config {
     };
   });
 
-  const baseFee = parseInt(process.env.FLUID_BASE_FEE || "100", 10);
-  const feeMultiplier = parseFloat(process.env.FLUID_FEE_MULTIPLIER || "2.0");
-  const networkPassphrase =
-    process.env.STELLAR_NETWORK_PASSPHRASE ||
-    "Test SDF Network ; September 2015";
-  const horizonUrl = process.env.STELLAR_HORIZON_URL;
-
-  // Safety limits to prevent DoS attacks
-  const maxXdrSize = parseInt(process.env.FLUID_MAX_XDR_SIZE || "10240", 10); // Default: 10KB
-  const maxOperations = parseInt(process.env.FLUID_MAX_OPERATIONS || "100", 10); // Default: 100 operations
+  const maxXdrSize = parseInt(process.env.FLUID_MAX_XDR_SIZE || "10240", 10);
+  const maxOperations = parseInt(process.env.FLUID_MAX_OPERATIONS || "100", 10);
 
   return {
     feePayerAccounts,
@@ -184,12 +181,8 @@ export function loadConfig(): Config {
   };
 }
 
-// Round-robin counter (module-level, safe for single-threaded Node.js event loop)
 let rrIndex = 0;
 
-/**
- * Pick the next fee payer account using Round Robin strategy.
- */
 export function pickFeePayerAccount(config: Config): FeePayerAccount {
   const accounts = config.feePayerAccounts;
   const account = accounts[rrIndex % accounts.length];
