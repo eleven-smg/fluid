@@ -30,6 +30,8 @@ export interface Config {
   feeMultiplier: number;
   networkPassphrase: string;
   horizonUrl?: string;
+  horizonUrls: string[];
+  horizonSelectionStrategy: HorizonSelectionStrategy;
   rateLimitWindowMs: number;
   rateLimitMax: number;
   allowedOrigins: string[];
@@ -261,6 +263,41 @@ function parseAllowedOrigins(value: string | undefined): string[] {
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+}
+
+function parseCommaSeparatedList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function loadVaultConfig(): VaultConfig | undefined {
+  const addr = process.env.VAULT_ADDR?.trim();
+  if (!addr) {
+    return undefined;
+  }
+
+  const token = process.env.VAULT_TOKEN?.trim();
+  const roleId = process.env.VAULT_APPROLE_ROLE_ID?.trim();
+  const secretId = process.env.VAULT_APPROLE_SECRET_ID?.trim();
+  const kvMount = process.env.FLUID_VAULT_KV_MOUNT?.trim() || "secret";
+  const kvVersionRaw = process.env.FLUID_VAULT_KV_VERSION?.trim() || "2";
+  const kvVersion = kvVersionRaw === "1" ? 1 : 2;
+  const secretField = process.env.FLUID_FEE_PAYER_VAULT_SECRET_FIELD?.trim() || "secret";
+
+  return {
+    addr,
+    token,
+    appRole: token ? undefined : (roleId && secretId ? { roleId, secretId } : undefined),
+    kvMount,
+    kvVersion,
+    secretField,
+  };
 }
 
 // Round-robin counter (module-level, safe for single-threaded Node.js event loop)

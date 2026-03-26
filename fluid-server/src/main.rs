@@ -46,6 +46,14 @@ struct FeeBumpRequest {
     xdr: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeeBumpBatchRequest {
+    submit: Option<bool>,
+    token: Option<String>,
+    xdrs: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct FeeBumpReadyResponse {
     fee_payer: String,
@@ -61,6 +69,13 @@ struct FeeBumpSubmittedResponse {
     submission_attempts: usize,
     submitted_via: String,
     xdr: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum FeeBumpResponse {
+    Ready(FeeBumpReadyResponse),
+    Submitted(FeeBumpSubmittedResponse),
 }
 
 #[derive(Deserialize)]
@@ -194,6 +209,7 @@ async fn run() -> Result<(), AppError> {
         .route("/metrics", get(metrics))
         .route("/verify-db", get(verify_db))
         .route("/fee-bump", post(fee_bump))
+        .route("/fee-bump/batch", post(fee_bump_batch))
         .route("/test/add-transaction", post(add_transaction))
         .route("/test/transactions", get(list_transactions))
         .fallback(not_found)
@@ -350,36 +366,7 @@ async fn fee_bump(
     state.metrics.inc_total_transactions();
     let started_at = Instant::now();
 
-    let result = fee_bump_inner(&state, addr, &headers, body).await;
-
-    state
-        .metrics
-        .observe_signing_latency_ms(started_at.elapsed().as_secs_f64() * 1_000.0);
-
-    if matches!(&result, Err(_))
-        || matches!(&result, Ok(response) if response.status().is_client_error() || response.status().is_server_error())
-    {
-        state.metrics.inc_failed_transactions();
-    }
-
-    result
-}
-
-async fn fee_bump_inner(
-    state: &AppState,
-    addr: SocketAddr,
-    headers: &HeaderMap,
-    body: FeeBumpRequest,
-) -> Result<Response, AppError> {
-    if body.xdr.trim().is_empty() {
-        return Err(AppError::new(
-            axum::http::StatusCode::BAD_REQUEST,
-            "INVALID_XDR",
-            "Validation failed: xdr field is required and must be a non-empty string",
-        ));
-    }
-
-    let api_key = extract_api_key(headers)?;
+    let api_key = extract_api_key(&headers)?;
     let api_key_config = find_api_key(&api_key)?;
     let ip_limit = state
         .global_limiter
@@ -387,13 +374,91 @@ async fn fee_bump_inner(
         .await?;
     let api_limit = check_api_key_rate_limit(state, &api_key_config).await?;
 
+    let result = process_fee_bump_request(
+        &state,
+        body.xdr,
+        body.submit.unwrap_or(false),
+        &api_key_config,
+    )
+    .await;
+
+    state
+        .metrics
+        .observe_signing_latency_ms(started_at.elapsed().as_secs_f64() * 1_000.0);
+
+    match result {
+        Ok(fee_bump_res) => {
+            let response = Json(fee_bump_res).into_response();
+            Ok(with_limit_headers(response, &ip_limit, &api_limit))
+        }
+        Err(err) => {
+            state.metrics.inc_failed_transactions();
+            Err(err)
+        }
+    }
+}
+
+async fn fee_bump_batch(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<FeeBumpBatchRequest>,
+) -> Result<Response, AppError> {
+    state.metrics.inc_total_transactions();
+    let started_at = Instant::now();
+
+    let api_key = extract_api_key(&headers)?;
+    let api_key_config = find_api_key(&api_key)?;
+    let ip_limit = state
+        .global_limiter
+        .check(&format!("ip:{}", addr.ip()))
+        .await?;
+    let api_limit = check_api_key_rate_limit(state, &api_key_config).await?;
+
+    let submit = body.submit.unwrap_or(false);
+    let mut results = Vec::with_capacity(body.xdrs.len());
+
+    for xdr in body.xdrs {
+        let result = process_fee_bump_request(&state, xdr, submit, &api_key_config).await;
+
+        match result {
+            Ok(res) => results.push(res),
+            Err(err) => {
+                state.metrics.inc_failed_transactions();
+                return Err(err);
+            }
+        }
+    }
+
+    state
+        .metrics
+        .observe_signing_latency_ms(started_at.elapsed().as_secs_f64() * 1_000.0);
+
+    let response = Json(results).into_response();
+    Ok(with_limit_headers(response, &ip_limit, &api_limit))
+}
+
+async fn process_fee_bump_request(
+    state: &AppState,
+    xdr: String,
+    submit: bool,
+    api_key_config: &ApiKeyConfig,
+) -> Result<FeeBumpResponse, AppError> {
+    if xdr.trim().is_empty() {
+        return Err(AppError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "INVALID_XDR",
+            "Validation failed: xdr field is required and must be a non-empty string",
+        ));
+    }
+
     let signer_lease = state.signer_pool.acquire().await?;
     let fee_payer = signer_lease.account.public_key.clone();
     let signer_index = signer_lease.index;
-    info!("Received fee-bump request | fee_payer: {fee_payer}");
+    info!("Processing fee-bump request | fee_payer: {fee_payer}");
 
     let result = match stellar::create_fee_bump_transaction(
-        &body.xdr,
+        &xdr,
         &state.config.network_passphrase,
         state.config.base_fee,
         state.config.fee_multiplier,
@@ -427,19 +492,13 @@ async fn fee_bump_inner(
 
     if current_spend + result.fee_amount > api_key_config.daily_quota_stroops {
         signer_lease.release().await;
-        return Ok(with_limit_headers(
-            (
-                axum::http::StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "attemptedFeeStroops": result.fee_amount,
-                    "currentSpendStroops": current_spend,
-                    "dailyQuotaStroops": api_key_config.daily_quota_stroops,
-                    "error": "Daily fee sponsorship quota exceeded"
-                })),
-            )
-                .into_response(),
-            &ip_limit,
-            &api_limit,
+        return Err(AppError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "QUOTA_EXCEEDED",
+            format!(
+                "Daily fee sponsorship quota exceeded. Current spend: {}, Attempted: {}, Quota: {}",
+                current_spend, result.fee_amount, api_key_config.daily_quota_stroops
+            ),
         ));
     }
 
@@ -453,15 +512,14 @@ async fn fee_bump_inner(
             tenant_id: api_key_config.tenant_id.to_string(),
         });
 
-    if !body.submit.unwrap_or(false) {
-        let response = Json(FeeBumpReadyResponse {
+    if !submit {
+        let response = FeeBumpResponse::Ready(FeeBumpReadyResponse {
             fee_payer,
             status: "ready",
             xdr: result.fee_bump_xdr,
-        })
-        .into_response();
+        });
         signer_lease.release().await;
-        return Ok(with_limit_headers(response, &ip_limit, &api_limit));
+        return Ok(response);
     }
 
     if state.config.horizon_urls.is_empty() {
@@ -498,17 +556,16 @@ async fn fee_bump_inner(
         },
     );
 
-    let response = Json(FeeBumpSubmittedResponse {
+    let response = FeeBumpResponse::Submitted(FeeBumpSubmittedResponse {
         fee_payer,
         hash: submission.hash,
         status: "submitted",
         submission_attempts: submission.attempts,
         submitted_via: submission.node_url,
         xdr: result.fee_bump_xdr,
-    })
-    .into_response();
+    });
     signer_lease.release().await;
-    Ok(with_limit_headers(response, &ip_limit, &api_limit))
+    Ok(response)
 }
 
 async fn not_found(uri: Uri, request: Request) -> Response {

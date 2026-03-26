@@ -8,7 +8,7 @@ import dotenv from "dotenv";
 
 import { loadConfig } from "./config";
 import { AppError } from "./errors/AppError";
-import { feeBumpHandler } from "./handlers/feeBump";
+import { feeBumpHandler, feeBumpBatchHandler } from "./handlers/feeBump";
 import {
   getHorizonFailoverClient,
   initializeHorizonFailoverClient,
@@ -156,6 +156,16 @@ app.post(
   limiter,
   (req: Request, res: Response, next: NextFunction) => {
     feeBumpHandler(req, res, next, config);
+  },
+);
+
+app.post(
+  "/fee-bump/batch",
+  apiKeyMiddleware,
+  apiKeyRateLimit,
+  limiter,
+  (req: Request, res: Response, next: NextFunction) => {
+    feeBumpBatchHandler(req, res, next, config);
   },
 );
 

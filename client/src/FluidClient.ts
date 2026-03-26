@@ -20,6 +20,11 @@ export interface FeeBumpRequestBody {
   submit?: boolean;
 }
 
+export interface FeeBumpBatchRequestBody {
+  xdrs: string[];
+  submit?: boolean;
+}
+
 export type XdrSerializableTransaction = {
   toXDR: () => string;
 };
@@ -73,6 +78,37 @@ export class FluidClient {
     }
 
     return (await response.json()) as FeeBumpResponse;
+  }
+
+  async requestFeeBumpBatch(
+    transactions: FeeBumpRequestInput[],
+    submit: boolean = false
+  ): Promise<FeeBumpResponse[]> {
+    const response = await fetch(`${this.serverUrl}/fee-bump/batch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        xdrs: transactions.map((t) => this.serializeTransaction(t)),
+        submit,
+      } satisfies FeeBumpBatchRequestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      try {
+        const parsed = JSON.parse(errorText) as Record<string, unknown>;
+        throw new Error(`Fluid server error: ${JSON.stringify(parsed)}`);
+      } catch {
+        throw new Error(
+          `Fluid server error: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ""}`
+        );
+      }
+    }
+
+    return (await response.json()) as FeeBumpResponse[];
   }
 
   async submitFeeBumpTransaction(

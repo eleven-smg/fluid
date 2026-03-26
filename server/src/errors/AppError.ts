@@ -9,7 +9,8 @@ export type ErrorCode =
   | "INTERNAL_ERROR"
   | "PAYLOAD_TOO_LARGE"
   | "TOO_MANY_OPERATIONS"
-  | "NETWORK_MISMATCH";
+  | "NETWORK_MISMATCH"
+  | "QUOTA_EXCEEDED";
 
 export class AppError extends Error {
   public readonly statusCode: number;
