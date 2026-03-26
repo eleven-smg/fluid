@@ -15,6 +15,7 @@
     "build:worker": "tsc src/workers/signingWorker.ts --outDir dist --target ES2020 --module ESNext --lib ES2020,WebWorker,DOM",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
+    "analyze": "tsup src/index.ts --format esm --metafile && echo 'Analyze metafile with a tool or visualizer'"
     "demo": "python -m http.server 8080",
     "test:performance": "open demo.html"
     "demo:wait-confirmation": "ts-node src/demo/waitForConfirmation.ts",
@@ -41,11 +42,13 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "rollup-plugin-visualizer": "^7.0.1",
     "msw": "^2.12.14",
     "@types/react": "^18.3.18",
     "stellar-sdk-v10": "npm:stellar-sdk@10.4.1",
     "stellar-sdk-v11": "npm:@stellar/stellar-sdk@11.3.0",
     "ts-node": "^10.9.2",
+    "tsup": "^8.5.1",
     "typescript": "^5.3.3"
   },
   "files": [
