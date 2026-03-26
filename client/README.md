@@ -18,6 +18,7 @@ const client = new FluidClient({
   serverUrl: "http://localhost:3000",
   networkPassphrase: StellarSdk.Networks.TESTNET,
   horizonUrl: "https://horizon-testnet.stellar.org",
+  sorobanRpcUrl: "https://soroban-testnet.stellar.org",
 });
 
 const transaction = new StellarSdk.TransactionBuilder(account, {
@@ -33,58 +34,47 @@ const result = await client.requestFeeBump(transaction, false);
 const submitResult = await client.submitFeeBumpTransaction(result.xdr);
 ```
 
-## React Hook
+## Soroban SAC helper
 
-`useFeeBump` wraps the `FluidClient` fee-bump request flow in React state so components get `isLoading`, `error`, and `result` without managing raw `fetch` calls.
-
-```tsx
-import { useMemo, useState } from "react";
+```typescript
 import StellarSdk from "@stellar/stellar-sdk";
-import { FluidClient, useFeeBump } from "fluid-client";
+import { FluidClient } from "./src";
 
-interface SponsorButtonProps {
-  transaction: StellarSdk.Transaction;
-}
+const client = new FluidClient({
+  serverUrl: "http://localhost:3000",
+  networkPassphrase: StellarSdk.Networks.TESTNET,
+  sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+});
 
-export function SponsorButton({ transaction }: SponsorButtonProps) {
-  const [submit, setSubmit] = useState(false);
+const prepared = await client.buildSACTransferTx({
+  source: "G...SOURCE",
+  destination: "G...DESTINATION",
+  asset: "native",
+  amount: "1000000",
+});
 
-  const client = useMemo(
-    () =>
-      new FluidClient({
-        serverUrl: process.env.NEXT_PUBLIC_FLUID_SERVER_URL ?? "http://localhost:3000",
-        networkPassphrase: StellarSdk.Networks.TESTNET,
-      }),
-    []
-  );
+console.log(prepared.toXDR());
+```
 
-  const { requestFeeBump, isLoading, error, result } = useFeeBump(client);
+Supported `asset` inputs:
 
-  async function handleSponsorClick() {
-    await requestFeeBump(transaction, submit);
-  }
+- `"native"` or `"xlm"` for Native XLM
+- `"CODE:ISSUER"` for issued assets
+- `new StellarSdk.Asset(code, issuer)`
+- `{ code, issuer }`
 
-  return (
-    <div>
-      <label>
-        <input
-          checked={submit}
-          disabled={isLoading}
-          onChange={(event) => setSubmit(event.target.checked)}
-          type="checkbox"
-        />
-        Submit immediately
-      </label>
+Soroban-specific options:
 
-      <button disabled={isLoading} onClick={handleSponsorClick} type="button">
-        {isLoading ? "Sponsoring..." : "Sponsor transaction"}
-      </button>
+- `sorobanRpcUrl`: required so the SDK can simulate and prepare the invoke-host-function transaction
+- `amount`: must be provided in integer base units expected by the SAC
+- `timeoutInSeconds`: optional transaction timeout, default `180`
+- `fee`: optional base fee before Soroban resource fees are added during preparation
+- `sourceAccount`: optional preloaded source account if you want to avoid an extra RPC call
 
-      {error ? <p role="alert">{error.message}</p> : null}
-      {result ? <pre>{JSON.stringify(result, null, 2)}</pre> : null}
-    </div>
-  );
-}
+To print a successfully generated SAC transfer XDR on testnet:
+
+```bash
+npm run demo:sac-transfer-xdr
 ```
 
 ## API
@@ -98,6 +88,7 @@ new FluidClient(config: {
   serverUrl: string;
   networkPassphrase: string;
   horizonUrl?: string;
+  sorobanRpcUrl?: string;
 })
 ```
 
@@ -106,6 +97,7 @@ new FluidClient(config: {
 - `requestFeeBump(transactionOrXdr: string | { toXDR(): string }, submit?: boolean)` - Request a fee-bump using either signed XDR or a transaction object
 - `submitFeeBumpTransaction(feeBumpXdr: string)` - Submit a fee-bump transaction to Horizon
 - `buildAndRequestFeeBump(transaction: Transaction, submit?: boolean)` - Build, sign, and request fee-bump
+- `buildSACTransferTx(options)` - Build and prepare a Stellar Asset Contract transfer transaction ready for signing and fee bumping
 
 ### `useFeeBump`
 
@@ -122,4 +114,6 @@ const { requestFeeBump, isLoading, error, result } = useFeeBump(client);
 
 ```bash
 npm run build
+npm run dev
+npm run demo:sac-transfer-xdr
 ```

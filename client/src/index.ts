@@ -1,5 +1,10 @@
 import StellarSdk from "@stellar/stellar-sdk";
+import { SorobanRpc, Transaction } from "@stellar/stellar-sdk";
 import dotenv from "dotenv";
+import {
+  BuildSACTransferTxOptions,
+  buildSACTransferTx as buildSACTransferTxHelper,
+} from "./soroban";
 import {
   createHorizonServer,
   fromTransactionXdr,
@@ -13,6 +18,7 @@ export interface FluidClientConfig {
   serverUrl: string;
   networkPassphrase: string;
   horizonUrl?: string;
+  sorobanRpcUrl?: string;
   useWorker?: boolean; // New option to enable Web Worker for signing operations
   stellarSdk?: unknown;
 }
@@ -51,6 +57,7 @@ export class FluidClient {
   private serverUrl: string;
   private networkPassphrase: string;
   private horizonServer?: any;
+  private sorobanServer?: SorobanRpc.Server;
   private useWorker: boolean;
   private worker?: Worker;
   private pendingRequests: Map<
@@ -74,6 +81,9 @@ export class FluidClient {
     // Initialize worker if enabled
     if (this.useWorker && typeof Worker !== "undefined") {
       this.initializeWorker();
+    }
+    if (config.sorobanRpcUrl) {
+      this.sorobanServer = new SorobanRpc.Server(config.sorobanRpcUrl);
     }
   }
 
@@ -315,6 +325,18 @@ export class FluidClient {
     return await this.requestFeeBump(signedXdr, submit);
   }
 
+  async buildSACTransferTx(
+    options: Omit<BuildSACTransferTxOptions, "networkPassphrase" | "sorobanServer">
+  ): Promise<Transaction> {
+    return buildSACTransferTxHelper({
+      ...options,
+      networkPassphrase: this.networkPassphrase,
+      sorobanServer: this.sorobanServer,
+    });
+  }
+}
+
+export * from "./soroban";
   // New method for performance testing
   async signMultipleTransactions(
     transactions: any[],
