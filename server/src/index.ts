@@ -10,7 +10,7 @@ import { feeBumpHandler } from "./handlers/feeBump";
 import { updateWebhookHandler } from "./handlers/tenantWebhook";
 import { healthHandler } from "./handlers/health";
 
-import { apiKeyMiddleware } from "./middleware/apiKeys";
+// import { apiKeyMiddleware } from "./middleware/apiKeys";
 import { apiKeyRateLimit } from "./middleware/rateLimit";
 import { notFoundHandler, globalErrorHandler } from "./middleware/errorHandler";
 import { AppError } from "./errors/AppError";
