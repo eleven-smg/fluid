@@ -39,6 +39,7 @@ const limiter = rateLimit({
 
 // CORS configuration
 const corsOptions = {
+  credentials: true,
   origin: (
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void,
@@ -56,7 +57,6 @@ const corsOptions = {
     }
     callback(new Error("Origin not allowed by CORS"), false);
   },
-  credentials: true,
 };
 
 app.use(cors(corsOptions));
@@ -66,6 +66,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   if (err.message === "Origin not allowed by CORS") {
     return next(new AppError("CORS not allowed", 403, "AUTH_FAILED"));
   }
+
   next(err);
 });
 
@@ -102,9 +103,36 @@ app.get("/test/transactions", (req: Request, res: Response) => {
 
 //  Error Handling 
 app.use(notFoundHandler);
-app.use(globalErrorHandler);
+app.use(createGlobalErrorHandler(slackNotifier));
 
-const PORT = process.env.PORT || 3000;
+let balanceMonitor: ReturnType<typeof initializeBalanceMonitor> | null = null;
+let ledgerMonitor: ReturnType<typeof initializeLedgerMonitor> | null = null;
+let shuttingDown = false;
+let server: ReturnType<typeof app.listen> | null = null;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  await slackNotifier.notifyServerLifecycle({
+    detail: `Signal received: ${signal}`,
+    phase: "stop",
+    timestamp: new Date(),
+  });
+
+  ledgerMonitor?.stop();
+  balanceMonitor?.stop();
+
+  if (server) {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2_000).unref();
+    return;
+  }
+
+  process.exit(0);
+}
 
 // --- Background Workers ---
 let ledgerMonitor: any = null;
