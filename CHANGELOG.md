@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/Stellar-Fluid/fluid/compare/v1.1.0...v1.2.0) (2026-03-28)
+
+
+### Features
+
+* add real-time notification centre in dashboard header ([b506146](https://github.com/Stellar-Fluid/fluid/commit/b5061465d1f7903e7310532e5e2a5154f803929e)), closes [#161](https://github.com/Stellar-Fluid/fluid/issues/161)
+
 # [1.1.0](https://github.com/Stellar-Fluid/fluid/compare/v1.0.0...v1.1.0) (2026-03-28)
 
 
