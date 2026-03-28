@@ -51,6 +51,13 @@ import { initializeIncidentMonitor } from "./workers/incidentMonitor";
 import { initializeTreasuryRefill } from "./workers/treasuryRefill";
 import { transactionStore } from "./workers/transactionStore";
 import { healthHandler } from "./handlers/health";
+import {
+  listNotificationsHandler,
+  createNotificationHandler,
+  markReadHandler,
+  markAllReadHandler,
+  notificationSseHandler,
+} from "./handlers/adminNotifications";
 
 dotenv.config();
 
@@ -253,6 +260,23 @@ app.delete("/admin/device-tokens/:id", deleteDeviceTokenHandler);
 app.get("/admin/webhooks/dlq", listDlqHandler);
 app.post("/admin/webhooks/dlq/replay", replayDlqHandler);
 app.post("/admin/webhooks/dlq/delete", deleteDlqHandler);
+
+// Notification centre routes (SSE must be registered before /:id/read)
+app.get("/admin/notifications/sse", (req: Request, res: Response) =>
+  notificationSseHandler(req, res)
+);
+app.get("/admin/notifications", (req: Request, res: Response) => {
+  void listNotificationsHandler(req, res);
+});
+app.post("/admin/notifications", (req: Request, res: Response) => {
+  void createNotificationHandler(req, res);
+});
+app.patch("/admin/notifications/read-all", (req: Request, res: Response) => {
+  void markAllReadHandler(req, res);
+});
+app.patch("/admin/notifications/:id/read", (req: Request, res: Response) => {
+  void markReadHandler(req, res);
+});
 
 app.post(
   "/stripe/webhook",
