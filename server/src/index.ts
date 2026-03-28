@@ -19,6 +19,7 @@ import {
   listSignersHandler,
   removeSignerHandler,
 } from "./handlers/adminSigners";
+import { badgeHandler } from "./handlers/badge";
 import { feeBumpBatchHandler, feeBumpHandler } from "./handlers/feeBump";
 import { createCheckoutSessionHandler, stripeWebhookHandler } from "./handlers/stripe";
 import {
@@ -120,6 +121,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     return next(new AppError("CORS not allowed", 403, "AUTH_FAILED"));
   }
   next(err);
+});
+
+app.get("/badge", (req: Request, res: Response) => {
+  void badgeHandler(req, res, config);
 });
 
 app.get("/health", (req: Request, res: Response) => {

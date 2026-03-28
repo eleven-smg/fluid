@@ -8,9 +8,11 @@ import { recordSponsoredTransaction } from "../models/transactionLedger";
 import { FeeBumpRequest, FeeBumpSchema, FeeBumpBatchRequest, FeeBumpBatchSchema } from "../schemas/feeBump";
 import { checkTenantDailyQuota } from "../services/quota";
 import { calculateFeeBumpFee } from "../utils/feeCalculator";
+import { verifyXdrNetwork } from "../utils/networkVerification";
 import { MockPriceOracle, validateSlippage } from "../utils/priceOracle";
 import { transactionMilestoneService } from "../services/discordMilestones";
 import { transactionStore } from "../workers/transactionStore";
+import { prisma } from "../utils/db";
 
 export interface FeeBumpResponse {
   xdr: string;
@@ -79,47 +81,98 @@ async function processFeeBump(
     );
   }
 
-  const feeBumpTx = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
-    feePayerAccount.keypair,
-    feeAmount.toString(),
-    innerTransaction,
-    config.networkPassphrase
-  );
+  const innerTxHash = innerTransaction.hash().toString("hex");
 
-  feeBumpTx.sign(feePayerAccount.keypair);
-  await recordSponsoredTransaction(tenant.id, feeAmount);
-  await maybeNotifyMilestones();
+  // Create transaction record with PENDING status
+  const transactionRecord = await prisma.transaction.create({
+    data: {
+      innerTxHash,
+      tenantId: tenant.id,
+      status: "PENDING",
+      costStroops: feeAmount,
+    },
+  });
 
-  const feeBumpXdr = feeBumpTx.toXDR();
+  try {
+    const feeBumpTx = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
+      feePayerAccount.keypair,
+      feeAmount.toString(),
+      innerTransaction,
+      config.networkPassphrase
+    );
 
-  if (submit && config.horizonUrl) {
-    const server = new StellarSdk.Horizon.Server(config.horizonUrl);
+    feeBumpTx.sign(feePayerAccount.keypair);
+    await recordSponsoredTransaction(tenant.id, feeAmount);
+    await maybeNotifyMilestones();
 
-    try {
-      const submissionResult = await server.submitTransaction(feeBumpTx);
-      await transactionStore.addTransaction(submissionResult.hash, tenant.id, "submitted");
+    const feeBumpXdr = feeBumpTx.toXDR();
+    const feeBumpTxHash = feeBumpTx.hash().toString("hex");
 
-      return {
-        xdr: feeBumpXdr,
-        status: "submitted",
-        hash: submissionResult.hash,
-        fee_payer: feePayerAccount.publicKey,
-      };
-    } catch (error: any) {
-      console.error("Transaction submission failed:", error);
-      throw new AppError(
-        `Transaction submission failed: ${error.message}`,
-        500,
-        "SUBMISSION_FAILED"
-      );
+    if (submit && config.horizonUrl) {
+      const server = new StellarSdk.Horizon.Server(config.horizonUrl);
+
+      try {
+        const submissionResult = await server.submitTransaction(feeBumpTx);
+        await transactionStore.addTransaction(submissionResult.hash, tenant.id, "submitted");
+
+        await prisma.transaction.update({
+          where: { id: transactionRecord.id },
+          data: {
+            status: "SUCCESS",
+            txHash: submissionResult.hash,
+          },
+        });
+
+        return {
+          xdr: feeBumpXdr,
+          status: "submitted",
+          hash: submissionResult.hash,
+          fee_payer: feePayerAccount.publicKey,
+        };
+      } catch (error: any) {
+        console.error("Transaction submission failed:", error);
+
+        // Update transaction record to FAILED
+        await prisma.transaction.update({
+          where: { id: transactionRecord.id },
+          data: {
+            status: "FAILED",
+          },
+        });
+
+        throw new AppError(
+          `Transaction submission failed: ${error.message}`,
+          500,
+          "SUBMISSION_FAILED"
+        );
+      }
     }
-  }
 
-  return {
-    xdr: feeBumpXdr,
-    status: submit ? "submitted" : "ready",
-    fee_payer: feePayerAccount.publicKey,
-  };
+    // Update transaction record to SUCCESS for non-submitted transactions
+    await prisma.transaction.update({
+      where: { id: transactionRecord.id },
+      data: {
+        status: "SUCCESS",
+        txHash: feeBumpTxHash,
+      },
+    });
+
+    return {
+      xdr: feeBumpXdr,
+      status: submit ? "submitted" : "ready",
+      fee_payer: feePayerAccount.publicKey,
+    };
+  } catch (error: any) {
+    // Update transaction record to FAILED for any other errors
+    await prisma.transaction.update({
+      where: { id: transactionRecord.id },
+      data: {
+        status: "FAILED",
+      },
+    });
+
+    throw error;
+  }
 }
 
 export async function feeBumpHandler(
@@ -131,10 +184,10 @@ export async function feeBumpHandler(
   try {
     const result = FeeBumpSchema.safeParse(req.body);
 
-    if (!parsedBody.success) {
+    if (!result.success) {
       console.warn(
         "Validation failed for fee-bump request:",
-        parsedBody.error.format()
+        result.error.format()
       );
 
       return next(
@@ -148,9 +201,30 @@ export async function feeBumpHandler(
 
     const body: FeeBumpRequest = result.data;
 
+    // Validate XDR early so errors surface before touching the signer pool
+    let parsedInner: Transaction;
+    try {
+      parsedInner = StellarSdk.TransactionBuilder.fromXDR(
+        body.xdr,
+        config.networkPassphrase
+      ) as Transaction;
+    } catch (err: any) {
+      return next(new AppError(`Invalid XDR: ${err.message}`, 400, "INVALID_XDR"));
+    }
+    if ("innerTransaction" in parsedInner) {
+      return next(new AppError("Cannot fee-bump an already fee-bumped transaction", 400, "ALREADY_FEE_BUMPED"));
+    }
+
+    // Verify the XDR was signed for the server's configured network
+    const networkCheck = verifyXdrNetwork(body.xdr, config.networkPassphrase);
+    if (!networkCheck.valid) {
+      return next(new AppError(networkCheck.errorMessage ?? "Network mismatch", 400, "NETWORK_MISMATCH"));
+    }
+
     // Check against token whitelist if a token is provided
     if (body.token) {
-      const isWhitelisted = config.supportedAssets.some((asset) => {
+      const supportedAssets = config.supportedAssets ?? [];
+      const isWhitelisted = supportedAssets.some((asset) => {
         const assetId = asset.issuer ? `${asset.code}:${asset.issuer}` : asset.code;
         return body.token === assetId;
       });
@@ -166,9 +240,24 @@ export async function feeBumpHandler(
         );
       }
       console.log(`Accepted whitelisted asset: ${body.token}`);
+
+      // Slippage protection for token payments
+      if (body.maxSlippage !== undefined) {
+        const priceOracle = new MockPriceOracle();
+        const requestTime = Date.now();
+        try {
+          const currentPrice = await priceOracle.getCurrentPrice(body.token);
+          const historicalPrice = await priceOracle.getHistoricalPrice(body.token, requestTime - 120000);
+          const slippageCheck = validateSlippage(historicalPrice, currentPrice, body.maxSlippage);
+          if (!slippageCheck.valid) {
+            return next(new AppError("Slippage too high: try increasing your fee payment", 400, "SLIPPAGE_TOO_HIGH"));
+          }
+        } catch (error: any) {
+          return next(new AppError(`Failed to verify token price: ${error.message}`, 500, "INTERNAL_ERROR"));
+        }
+      }
     }
 
-    
     const apiKeyConfig = res.locals.apiKey as ApiKeyConfig | undefined;
     if (!apiKeyConfig) {
       res.status(500).json({
@@ -220,155 +309,18 @@ export async function feeBumpBatchHandler(
     }
 
     const body: FeeBumpBatchRequest = parsedBody.data;
-    const operationCount = innerTransaction.operations?.length || 0;
-    const feeAmount = calculateFeeBumpFee(
-      operationCount,
-      config.baseFee,
-      config.feeMultiplier,
-    );
-
-    // Verify settlement payment if token is specified
-    const settlementRequirement = extractSettlementRequirement(
-      body.token,
-      feeAmount,
-    );
-    if (settlementRequirement) {
-      const settlementVerification = verifySettlementPayment(
-        innerTransaction,
-        settlementRequirement,
-        config,
-      );
-
-      if (!settlementVerification.isValid) {
-        console.error(
-          `Settlement verification failed: ${settlementVerification.reason}`,
-        );
-        return next(
-          new AppError(
-            `Settlement verification failed: ${settlementVerification.reason}`,
-            400,
-            "SETTLEMENT_VERIFICATION_FAILED",
-          ),
-        );
-      }
-    }
 
     const apiKeyConfig = res.locals.apiKey as ApiKeyConfig | undefined;
     if (!apiKeyConfig) {
-      res.status(500).json({
-        error: "Missing tenant context for fee sponsorship",
-      });
+      res.status(500).json({ error: "Missing tenant context for fee sponsorship" });
       return;
     }
 
     const tenant = syncTenantFromApiKey(apiKeyConfig);
-    const quotaCheck = await checkTenantDailyQuota(tenant, feeAmount);
-    if (!quotaCheck.allowed) {
-      res.status(403).json({
-        error: "Tier limit exceeded",
-        currentSpendStroops: quotaCheck.currentSpendStroops,
-        attemptedFeeStroops: feeAmount,
-        dailyQuotaStroops: quotaCheck.dailyQuotaStroops,
-        currentTxCount: quotaCheck.currentTxCount,
-        projectedTxCount: quotaCheck.projectedTxCount,
-        txLimit: quotaCheck.txLimit,
-      });
-      return;
-    }
-
-    // Slippage protection for token payments
-    if (body.token && body.maxSlippage !== undefined) {
-      const priceOracle = new MockPriceOracle();
-      const requestTime = Date.now();
-
-      try {
-        const currentPrice = await priceOracle.getCurrentPrice(body.token);
-        const historicalPrice = await priceOracle.getHistoricalPrice(
-          body.token,
-          requestTime - 120000,
-        ); // 2 minutes ago
-
-        const slippageCheck = validateSlippage(
-          historicalPrice,
-          currentPrice,
-          body.maxSlippage,
-        );
-
-        if (!slippageCheck.valid) {
-          return next(
-            new AppError(
-              "Slippage too high: try increasing your fee payment",
-              400,
-              "SLIPPAGE_TOO_HIGH",
-            ),
-          );
-        }
-
-        console.log(
-          `Slippage check passed | token: ${body.token} | slippage: ${slippageCheck.actualSlippage.toFixed()}% | max: ${body.maxSlippage}%`,
-        );
-      } catch (error: any) {
-        console.error("Price oracle error:", error.message);
-        return next(
-          new AppError(
-            `Failed to verify token price: ${error.message}`,
-            500,
-            "INTERNAL_ERROR",
-          ),
-        );
-      }
-    }
-
-    // Preflight simulation for Soroban transactions
-    const isSoroban = innerTransaction.operations.some((op: any) =>
-      ["invokeHostFunction", "extendFootprintTtl", "restoreFootprint"].includes(
-        op.type,
-      ),
+    const feePayerAccount = pickFeePayerAccount(config);
+    const results: FeeBumpResponse[] = await Promise.all(
+      body.xdrs.map((xdr) => processFeeBump(xdr, body.submit ?? false, config, tenant, feePayerAccount))
     );
-
-    const feeBumpTx = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
-      feePayerAccount.keypair,
-      feeAmount.toString(),
-      innerTransaction,
-      config.networkPassphrase,
-    );
-
-    feeBumpTx.sign(feePayerAccount.keypair);
-    await recordSponsoredTransaction(tenant.id, feeAmount);
-    await maybeNotifyMilestones();
-
-    const feeBumpXdr = feeBumpTx.toXDR();
-    console.log(
-      `Fee-bump transaction created | fee_payer: ${feePayerAccount.publicKey}`,
-    );
-
-    const submit = body.submit || false;
-    if (submit && config.horizonUrl) {
-      const server = new StellarSdk.Horizon.Server(config.horizonUrl);
-
-      try {
-        const submissionResult = await server.submitTransaction(feeBumpTx);
-        transactionStore.addTransaction(submissionResult.hash, tenant.id, "submitted");
-
-        const response: FeeBumpResponse = {
-          xdr: feeBumpXdr,
-          status: "submitted",
-          hash: submissionResult.hash,
-          fee_payer: feePayerAccount.publicKey,
-        };
-        res.json(response);
-        return;
-      } catch (error: any) {
-        console.error("Transaction submission failed:", error);
-        return next(
-          new AppError(
-            `Transaction submission failed: ${error.message}`,
-            500,
-            "SUBMISSION_FAILED",
-          ),
-        );
-      }
-    }
 
     res.json(results);
   } catch (error: any) {
