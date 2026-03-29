@@ -66,12 +66,15 @@ export interface TenantUsageRow {
   failedCount: number;
 }
 
+export type ChainId = "stellar" | "evm" | "solana" | "cosmos";
+
 export interface ApiKey {
   id: string;
   key: string;
   prefix: string;
   tenantId: string;
   active: boolean;
+  allowedChains: ChainId[];
   createdAt: string;
   updatedAt: string;
 }
