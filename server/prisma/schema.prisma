@@ -40,6 +40,9 @@ model Tenant {
   sponsoredTransactions  SponsoredTransaction[]
   usageStats             TenantUsageStats[]
   tierAdjustments        TierAdjustment[]
+  flaggedEvents          FlaggedEvent[]
+  spendBaseline          SpendBaseline?
+  sarReports             SARReport[]
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -193,15 +196,16 @@ model PendingRegistration {
 }
 
 model Transaction {
-  id          String   @id @default(uuid())
-  txHash      String?  // The hash of the fee-bump transaction
-  innerTxHash String   // The hash of the original transaction
+  id          String      @id @default(uuid())
+  txHash      String?     // The hash of the fee-bump transaction
+  innerTxHash String      // The hash of the original transaction
   tenantId    String
-  status      String   // PENDING, SUCCESS, FAILED
+  status      String      // PENDING, SUCCESS, FAILED
   costStroops BigInt
-  category    String   @default("Other")
-  chain       String   @default("stellar") // stellar, evm, solana, cosmos
-  createdAt   DateTime @default(now())
+  category    String      @default("Other")
+  chain       String      @default("stellar") // stellar, evm, solana, cosmos
+  createdAt   DateTime    @default(now())
+  sarReports  SARReport[]
 
   @@index([tenantId])
   @@index([status])
@@ -250,35 +254,95 @@ model StatusSubscription {
   @@index([active])
 }
 /// Tracks email addresses that have opted out of the daily digest.
-model AuditLog {
-  id        String   @id @default(uuid())
-  eventType String
-  actor     String
-  payload   Json?
-  timestamp DateTime @default(now())
-
-  @@index([eventType])
-  @@index([actor])
-  @@index([timestamp])
-}
-
 model DigestUnsubscribe {
   email     String   @id
   createdAt DateTime @default(now())
 }
 
 // Audit log — records admin and system actions with optional AI-generated summaries.
+// Merges legacy eventType/payload format with the newer action/metadata/aiSummary format.
 model AuditLog {
   id        String   @id @default(uuid())
   actor     String   // user ID, "system", or service name
-  action    String   // e.g. "tenant.create", "apikey.revoke", "signer.add"
+  // Legacy format fields (auditLogger.ts)
+  eventType String?
+  payload   Json?
+  timestamp DateTime @default(now())
+  // Newer format fields (auditLog.ts)
+  action    String?  // e.g. "tenant.create", "apikey.revoke", "signer.add"
   target    String?  // affected resource ID
   metadata  String?  // JSON blob with extra context
   aiSummary String?  // One-line AI-generated summary
   createdAt DateTime @default(now())
 
   @@index([actor])
+  @@index([eventType])
   @@index([action])
+  @@index([createdAt])
+  @@index([timestamp])
+}
+
+// Spend baseline for anomaly detection (7-day rolling average per tenant)
+model SpendBaseline {
+  id                String   @id @default(uuid())
+  tenantId          String   @unique
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dailyAvgStroops   BigInt   @default(0)
+  hourlyAvgStroops  BigInt   @default(0)
+  totalTransactions Int      @default(0)
+  lastUpdated       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// Anomaly detection flagged events (spend pattern anomalies per tenant)
+model FlaggedEvent {
+  id                   String    @id @default(uuid())
+  tenantId             String
+  tenant               Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  eventDate            DateTime
+  hourStart            DateTime
+  actualSpendStroops   BigInt
+  baselineDailyStroops BigInt
+  multiplier           Float
+  riskScore            Float
+  status               String    @default("pending") // pending, approved, blocked, dismissed
+  metadata             String?   // JSON blob
+  adminNote            String?
+  reviewedBy           String?
+  reviewedAt           DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([riskScore])
+  @@index([createdAt])
+}
+
+// SAR (Suspicious Activity Report) — flags individual transactions matching SAR rules
+model SARReport {
+  id            String    @id @default(uuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ruleCode      String    // e.g. HIGH_FREQUENCY, HIGH_SOROBAN_FEE, LARGE_FEE_BUMP
+  reason        String    // Human-readable reason for the flag
+  status        String    @default("pending_review") // pending_review, confirmed_suspicious, false_positive
+  adminNote     String?
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  metadata      String?   // JSON blob with rule evaluation context
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([transactionId, ruleCode])
+  @@index([tenantId])
+  @@index([status])
+  @@index([ruleCode])
   @@index([createdAt])
 }
 

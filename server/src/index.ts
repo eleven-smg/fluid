@@ -96,6 +96,13 @@ import {
 } from "./services/chainRegistryService";
 import { initializeFeeManager } from "./services/feeManager";
 import { listTransactionsHandler } from "./handlers/adminTransactions";
+import {
+  listSARReportsHandler,
+  getSARReportHandler,
+  reviewSARReportHandler,
+  getSARStatsHandler,
+  exportSARReportsHandler
+} from "./handlers/adminSAR";
 import { getSpendForecastHandler } from "./handlers/adminAnalytics";
 import { getFeeMultiplierHandler } from "./handlers/adminFeeMultiplier";
 import { estimateFeeHandler } from "./handlers/estimate";
@@ -560,6 +567,23 @@ app.post(
     }
   },
 );
+
+// SAR (Suspicious Activity Report) routes — Phase 12: Compliance
+app.get("/admin/sar/stats", (req: Request, res: Response) => {
+  void getSARStatsHandler(req, res);
+});
+app.get("/admin/sar/export", (req: Request, res: Response) => {
+  void exportSARReportsHandler(req, res);
+});
+app.get("/admin/sar", (req: Request, res: Response) => {
+  void listSARReportsHandler(req, res);
+});
+app.get("/admin/sar/:id", (req: Request, res: Response) => {
+  void getSARReportHandler(req, res);
+});
+app.patch("/admin/sar/:id/review", (req: Request, res: Response) => {
+  void reviewSARReportHandler(req, res);
+});
 
 app.use(notFoundHandler);
 app.use(createGlobalErrorHandler(slackNotifier));
