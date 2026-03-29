@@ -244,3 +244,20 @@ model DigestUnsubscribe {
   email     String   @id
   createdAt DateTime @default(now())
 }
+
+// Chain registry — operator-managed list of supported Stellar networks.
+// Fee payer secret is stored AES-256-GCM encrypted (same scheme as SignerSecret).
+model ChainRegistry {
+  id                String   @id @default(uuid())
+  chainId           String   @unique // e.g. "mainnet", "testnet"
+  name              String           // Human-readable name
+  rpcUrl            String           // Horizon or RPC endpoint URL
+  enabled           Boolean  @default(false)
+  encryptedSecret   String?          // Encrypted fee-payer secret (nullable)
+  initializationVec String?          // AES-GCM IV
+  authTag           String?          // AES-GCM auth tag
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([enabled])
+}
