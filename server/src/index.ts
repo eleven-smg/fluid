@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
+import swaggerUi from "swagger-ui-express";
 import { loadConfig } from "./config";
 import { AppError } from "./errors/AppError";
 import {
@@ -78,18 +79,6 @@ import {
   getLedgerMonitor,
   initializeLedgerMonitor,
 } from "./workers/ledgerMonitor";
-import { initializeIncidentMonitor } from "./workers/incidentMonitor";
-import { initializeTreasuryRefill } from "./workers/treasuryRefill";
-import { initializeDigestWorker } from "./workers/digestWorker";
-import { transactionStore } from "./workers/transactionStore";
-import { healthHandler } from "./handlers/health";
-import {
-  listNotificationsHandler,
-  createNotificationHandler,
-  markReadHandler,
-  markAllReadHandler,
-  notificationSseHandler,
-} from "./handlers/adminNotifications";
 import {
   digestUnsubscribeHandler,
   sendDigestNowHandler,
@@ -100,56 +89,50 @@ import {
   listChainsHandler,
   updateChainHandler,
 } from "./handlers/adminChains";
-import { startChainRegistryHotReload, stopChainRegistryHotReload } from "./services/chainRegistryService";
-  deleteDeviceTokenHandler,
-  listDeviceTokensHandler,
-  registerDeviceTokenHandler,
-} from "./handlers/adminDeviceTokens";
 import {
-  SlackNotifier,
-  loadSlackNotifierOptionsFromEnv,
-} from "./services/slackNotifier";
-import { PagerDutyNotifier } from "./services/pagerDutyNotifier";
-import { initializeFcmNotifier } from "./services/fcmNotifier";
+  startChainRegistryHotReload,
+  stopChainRegistryHotReload,
+} from "./services/chainRegistryService";
 import { initializeFeeManager } from "./services/feeManager";
 import { listTransactionsHandler } from "./handlers/adminTransactions";
 import { getSpendForecastHandler } from "./handlers/adminAnalytics";
 import { getFeeMultiplierHandler } from "./handlers/adminFeeMultiplier";
 import { estimateFeeHandler } from "./handlers/estimate";
+import { exportAuditLogHandler } from "./handlers/adminAuditLog";
+import { ensureAuditLogTableIntegrity } from "./services/auditLogger";
+import swaggerUi from "swagger-ui-express";
 import { listAuditLogsHandler } from "./handlers/adminAuditLogs";
 import { startAuditSummaryWorker } from "./services/auditLog";
-import {
-  listGrantersHandler,
-  getGranterHandler,
-  createGranterHandler,
-  updateGranterHandler,
-  deleteGranterHandler,
-  grantAllowanceHandler,
-  revokeAllowanceHandler,
-  listAllowancesHandler,
-  queryOnChainHandler,
-} from "./handlers/adminCosmosFeeGrant";
+import { swaggerSpec } from "./swagger";
+import { initializeTreasuryRefill } from "./workers/treasuryRefill";
+import { initializeDigestWorker } from "./workers/digestWorker";
+import { transactionStore } from "./workers/transactionStore";
+import { TreasuryRebalancer } from "./services/treasuryRebalancer";
+import { dailyScoringWorker } from "./workers/dailyScoringWorker";
+import { crossChainSyncService } from "./services/crossChainSyncService";
 
 dotenv.config();
 const logger = createLogger({ component: "server" });
-
-const app = express();
-app.use(express.json());
-
-// Swagger UI — available at /docs
-app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-// Raw OpenAPI JSON spec
-app.get("/docs.json", (_req: Request, res: Response) => {
-  res.setHeader("Content-Type", "application/json");
-  res.send(swaggerSpec);
-});
-
-const logger = createLogger({ component: "server" });
 const config = loadConfig();
+
+async function initializeAuditLog() {
+  try {
+    await ensureAuditLogTableIntegrity();
+  } catch (error) {
+    logger.error(
+      { error: error instanceof Error ? error.message : error },
+      "Failed to initialize audit log integrity",
+    );
+  }
+}
+
+initializeAuditLog();
+
 const feeManager = initializeFeeManager(config);
 const slackNotifier = new SlackNotifier(loadSlackNotifierOptionsFromEnv());
 const pagerDutyNotifier = new PagerDutyNotifier();
 const fcmNotifier = initializeFcmNotifier();
+
 if (fcmNotifier.isConfigured()) {
   logger.info("FCM push notifications enabled");
 } else {
@@ -157,9 +140,12 @@ if (fcmNotifier.isConfigured()) {
     "FCM push notifications disabled - FCM_PROJECT_ID/FCM_CLIENT_EMAIL/FCM_PRIVATE_KEY not set",
   );
 }
+const treasuryRebalancer = new TreasuryRebalancer(config);
 const alertService = new AlertService(config.alerting, slackNotifier, {
   fcmNotifier,
+  treasuryRebalancer,
 });
+treasuryRebalancer.setAlertService(alertService);
 
 const app = express();
 app.use(express.json());
@@ -399,6 +385,7 @@ app.delete("/admin/device-tokens/:id", deleteDeviceTokenHandler);
 app.get("/admin/webhooks/dlq", listDlqHandler);
 app.post("/admin/webhooks/dlq/replay", replayDlqHandler);
 app.post("/admin/webhooks/dlq/delete", deleteDlqHandler);
+app.get("/admin/audit-log/export", exportAuditLogHandler);
 
 // Notification centre routes (SSE must be registered before /:id/read)
 app.get("/admin/notifications/sse", (req: Request, res: Response) =>
@@ -417,7 +404,8 @@ app.patch("/admin/notifications/:id/read", (req: Request, res: Response) => {
   void markReadHandler(req, res);
 });
 
-app.post("/stripe/webhook",
+app.post(
+  "/stripe/webhook",
   express.raw({ type: "application/json" }),
   stripeWebhookHandler,
 );
@@ -434,33 +422,44 @@ app.get("/admin/audit-logs", (req: Request, res: Response) => {
   void listAuditLogsHandler(req, res);
 });
 
-// Cosmos FeeGrant — granter config + allowance management
-app.get("/admin/cosmos/granters", (req: Request, res: Response) => {
-  void listGrantersHandler(req, res);
+// Intelligent rate limiting admin routes
+app.get("/admin/rate-limit/candidates", (req: Request, res: Response) => {
+  void (async () => {
+    const { getUpgradeCandidatesHandler } = await import(
+      "./handlers/adminRateLimit"
+    );
+    getUpgradeCandidatesHandler(req, res);
+  })();
 });
-app.get("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
-  void getGranterHandler(req, res);
+app.post("/admin/rate-limit/adjust", (req: Request, res: Response) => {
+  void (async () => {
+    const { adminTierAdjustmentHandler } = await import(
+      "./handlers/adminRateLimit"
+    );
+    adminTierAdjustmentHandler(req, res);
+  })();
 });
-app.post("/admin/cosmos/granters", (req: Request, res: Response) => {
-  void createGranterHandler(req, res);
+app.get("/admin/rate-limit/usage/:tenantId", (req: Request, res: Response) => {
+  void (async () => {
+    const { getTenantUsageHandler } = await import("./handlers/adminRateLimit");
+    getTenantUsageHandler(req, res);
+  })();
 });
-app.patch("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
-  void updateGranterHandler(req, res);
+app.get("/admin/rate-limit/adjustments", (req: Request, res: Response) => {
+  void (async () => {
+    const { getTierAdjustmentsHandler } = await import(
+      "./handlers/adminRateLimit"
+    );
+    getTierAdjustmentsHandler(req, res);
+  })();
 });
-app.delete("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
-  void deleteGranterHandler(req, res);
-});
-app.post("/admin/cosmos/granters/:id/grant", (req: Request, res: Response) => {
-  void grantAllowanceHandler(req, res);
-});
-app.post("/admin/cosmos/granters/:id/revoke", (req: Request, res: Response) => {
-  void revokeAllowanceHandler(req, res);
-});
-app.get("/admin/cosmos/granters/:id/allowances", (req: Request, res: Response) => {
-  void listAllowancesHandler(req, res);
-});
-app.get("/admin/cosmos/granters/:id/on-chain", (req: Request, res: Response) => {
-  void queryOnChainHandler(req, res);
+app.post("/admin/rate-limit/manual-score", (req: Request, res: Response) => {
+  void (async () => {
+    const { triggerManualScoringHandler } = await import(
+      "./handlers/adminRateLimit"
+    );
+    triggerManualScoringHandler(req, res);
+  })();
 });
 
 // Chain registry — supported network management (Phase 11)
@@ -476,6 +475,89 @@ app.patch("/admin/chains/:id", (req: Request, res: Response) => {
 app.delete("/admin/chains/:id", (req: Request, res: Response) => {
   void deleteChainHandler(req, res);
 });
+
+// Cross-chain state sync management (Phase 11)
+app.get(
+  "/admin/cross-chain-sync/history",
+  async (req: Request, res: Response) => {
+    try {
+      const history = await prisma.crossChainSync.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
+      res.json({ history });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch sync history" });
+    }
+  },
+);
+
+app.get(
+  "/admin/cross-chain-sync/status",
+  async (req: Request, res: Response) => {
+    try {
+      // In a real implementation, we would query the contracts here.
+      // For the PoC, we'll return mock data or the last known state from the DB.
+      const lastSync = await prisma.crossChainSync.findFirst({
+        orderBy: { updatedAt: "desc" },
+      });
+
+      // Default or mock values if no sync has happened yet
+      let stellarCount = 0;
+      let evmCount = 0;
+
+      if (lastSync) {
+        const payload = JSON.parse(lastSync.payload);
+        const count = Number(payload.count);
+        stellarCount = count;
+        evmCount = count;
+      }
+
+      res.json({
+        stellarCount,
+        evmCount,
+        lastSyncAt: lastSync?.updatedAt || null,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch sync status" });
+    }
+  },
+);
+
+app.post(
+  "/admin/cross-chain-sync/increment-stellar",
+  async (req: Request, res: Response) => {
+    try {
+      logger.info("Manual Soroban increment triggered from admin");
+      // This would call the Soroban contract. For PoC, we simulate the success.
+      res.json({
+        ok: true,
+        message: "Soroban increment initiated",
+        txHash:
+          "MOCK_STELLAR_" + Math.random().toString(36).slice(2).toUpperCase(),
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to initiate Soroban increment" });
+    }
+  },
+);
+
+app.post(
+  "/admin/cross-chain-sync/increment-evm",
+  async (req: Request, res: Response) => {
+    try {
+      logger.info("Manual EVM increment triggered from admin");
+      // This would call the EVM contract. For PoC, we simulate the success.
+      res.json({
+        ok: true,
+        message: "EVM increment initiated",
+        txHash: "0x" + Math.random().toString(16).slice(2).padStart(64, "0"),
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to initiate EVM increment" });
+    }
+  },
+);
 
 app.use(notFoundHandler);
 app.use(createGlobalErrorHandler(slackNotifier));
@@ -507,6 +589,7 @@ async function shutdown(signal: string): Promise<void> {
   digestWorker?.stop();
   feeManager.stop();
   stopChainRegistryHotReload();
+  crossChainSyncService.stop();
 
   if (server) {
     server.close(() => process.exit(0));
@@ -609,7 +692,10 @@ try {
     logger.info("Daily digest worker started");
   }
 } catch (error) {
-  logger.error({ ...serializeError(error) }, "Failed to start daily digest worker");
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start daily digest worker",
+  );
 }
 
 // Audit log AI summary worker
@@ -617,14 +703,41 @@ try {
   startAuditSummaryWorker();
   logger.info("Audit summary worker started");
 } catch (error) {
-  logger.error({ ...serializeError(error) }, "Failed to start audit summary worker");
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start audit summary worker",
+  );
+}
+
+// Daily scoring worker for intelligent rate limiting
+try {
+  dailyScoringWorker.start();
+  logger.info("Daily scoring worker started");
+} catch (error) {
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start daily scoring worker",
+  );
 }
 
 // Chain registry hot-reload (reads enabled chains from DB on interval)
 try {
   startChainRegistryHotReload();
 } catch (error) {
-  logger.error({ ...serializeError(error) }, "Failed to start chain registry hot-reload");
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start chain registry hot-reload",
+  );
+}
+
+// Cross-chain state sync PoC (Phase 11)
+try {
+  crossChainSyncService.start();
+} catch (error) {
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start cross-chain sync service",
+  );
 }
 
 server = app.listen(PORT, () => {

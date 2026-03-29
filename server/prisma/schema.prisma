@@ -16,6 +16,8 @@ model SubscriptionTier {
   rateLimit    Int
   priceMonthly Int
   tenants      Tenant[]
+  tierAdjustmentsFrom TierAdjustment[] @relation("TierAdjustmentFromTier")
+  tierAdjustmentsTo   TierAdjustment[] @relation("TierAdjustmentToTier")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
@@ -36,6 +38,8 @@ model Tenant {
   quotaTopUps            QuotaTopUp[]
   payments               Payment[]
   sponsoredTransactions  SponsoredTransaction[]
+  usageStats             TenantUsageStats[]
+  tierAdjustments        TierAdjustment[]
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -240,6 +244,18 @@ model StatusSubscription {
   @@index([active])
 }
 /// Tracks email addresses that have opted out of the daily digest.
+model AuditLog {
+  id        String   @id @default(uuid())
+  eventType String
+  actor     String
+  payload   Json?
+  timestamp DateTime @default(now())
+
+  @@index([eventType])
+  @@index([actor])
+  @@index([timestamp])
+}
+
 model DigestUnsubscribe {
   email     String   @id
   createdAt DateTime @default(now())
@@ -318,4 +334,80 @@ model ChainRegistry {
   updatedAt         DateTime @updatedAt
 
   @@index([enabled])
+}
+
+model BridgeTransaction {
+  id            String   @id @default(uuid())
+  sourceChain   String   // e.g. "ethereum", "base"
+  targetChain   String   // e.g. "stellar"
+  sourceTxHash  String   @unique
+  targetTxHash  String?
+  vaa           String?  // The Wormhole VAA (hex or base64)
+  amount        BigInt   // Amount in base units (e.g. 6 decimals for USDC)
+  asset         String   // e.g. "USDC"
+  status        String   // PENDING, VAA_READY, COMPLETED, FAILED
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([sourceTxHash])
+}
+// Tracks daily usage statistics for each tenant
+model TenantUsageStats {
+  id            String   @id @default(uuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  date          DateTime @default(now()) // UTC date for the stats
+  requestCount  Int      @default(0)
+  violationCount Int     @default(0) // Rate limit violations
+  burstScore    Float    @default(0) // Burst behavior score (0-1)
+  avgRequestRate Float   @default(0) // Average requests per minute
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([tenantId, date])
+  @@index([date])
+  @@index([tenantId])
+}
+
+// Tracks rate limit tier adjustments and audit trail
+model TierAdjustment {
+  id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromTierId      String
+  fromTier        SubscriptionTier @relation("TierAdjustmentFromTier", fields: [fromTierId], references: [id])
+  toTierId        String
+  toTier          SubscriptionTier @relation("TierAdjustmentToTier", fields: [toTierId], references: [id])
+  reason          String   // "auto_upgrade", "admin_override", "violation_demotion"
+  violationFreeDays Int    @default(0) // Number of days without violations
+  avgUsageScore   Float    @default(0) // 30-day average usage score
+  autoAdjusted    Boolean  @default(false) // Whether this was an automatic adjustment
+  adjustedBy      String?  // Admin user ID if manual override
+  metadata        String?  // JSON blob for additional context
+  createdAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([createdAt])
+  @@index([autoAdjusted])
+}
+
+// Tracks cross-chain state sync events (e.g. Counter sync)
+model CrossChainSync {
+  id              String   @id @default(uuid())
+  sourceChain     String   // "stellar" or "ethereum"
+  targetChain     String
+  sourceTxHash    String   @unique
+  targetTxHash    String?
+  sourceContract  String
+  targetContract  String
+  payload         String   // JSON string of the sync data (e.g. { "count": 10 })
+  status          String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  error           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([sourceTxHash])
 }

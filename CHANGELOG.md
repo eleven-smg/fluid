@@ -1,3 +1,52 @@
+# [1.15.0](https://github.com/Stellar-Fluid/fluid/compare/v1.14.0...v1.15.0) (2026-03-29)
+
+
+### Features
+
+* ai-generated audit log summaries ([8dde1f6](https://github.com/Stellar-Fluid/fluid/commit/8dde1f66fec42d1166d8f20a698fe09fc8622570))
+
+# [1.14.0](https://github.com/Stellar-Fluid/fluid/compare/v1.13.0...v1.14.0) (2026-03-29)
+
+
+### Features
+
+* soroban - evm contract state sync proof ([e752023](https://github.com/Stellar-Fluid/fluid/commit/e752023fe0977a6501b743ed1fe29f1c21dcaf51))
+
+# [1.13.0](https://github.com/Stellar-Fluid/fluid/compare/v1.12.0...v1.13.0) (2026-03-29)
+
+
+### Features
+
+* wormhole integration ([1b7b86b](https://github.com/Stellar-Fluid/fluid/commit/1b7b86b1c39e157019c22ef7b0934d8f451072a6))
+
+# [1.12.0](https://github.com/Stellar-Fluid/fluid/compare/v1.11.0...v1.12.0) (2026-03-29)
+
+
+### Features
+
+* embedded ai support chatbot for dashboard operators ([d2d10a4](https://github.com/Stellar-Fluid/fluid/commit/d2d10a4d50a4c34453aea7d3d6eebf19498e5f5a))
+
+# [1.11.0](https://github.com/Stellar-Fluid/fluid/compare/v1.10.0...v1.11.0) (2026-03-29)
+
+
+### Features
+
+* ai-powered suspicious account auto-blocklist ([b774af4](https://github.com/Stellar-Fluid/fluid/commit/b774af4dd62f1a595dc3fa5979730c1e3d81acc4))
+
+# [1.10.0](https://github.com/Stellar-Fluid/fluid/compare/v1.9.0...v1.10.0) (2026-03-29)
+
+
+### Features
+
+* unified per-chain fee oracle with usd conversion ([fd7cdd7](https://github.com/Stellar-Fluid/fluid/commit/fd7cdd798a0a1efef586fcf62d86ac688d71923f))
+
+# [1.9.0](https://github.com/Stellar-Fluid/fluid/compare/v1.8.0...v1.9.0) (2026-03-29)
+
+
+### Features
+
+* implement chain-agnostic fee sponsorship for Stellar, EVM, and Solana ([32dad8c](https://github.com/Stellar-Fluid/fluid/commit/32dad8cc04cae8ffff2ee2fe3a4777c530af02c6))
+
 # [1.8.0](https://github.com/Stellar-Fluid/fluid/compare/v1.7.0...v1.8.0) (2026-03-29)
 
 

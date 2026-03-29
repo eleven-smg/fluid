@@ -13,6 +13,9 @@ sha2 = "0.10"
 stellar-strkey = "0.0.16"
 stellar-xdr = { version = "26.0.0", features = ["base64"] }
 wasm-bindgen = "0.2.105"
+
+base64 = "0.22"
+
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde", "rng-getrandom"] }
@@ -22,6 +25,7 @@ uuid = { version = "1.0", features = ["v4", "serde", "rng-getrandom"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # Some transitive deps use getrandom v0.4.x (e.g. hash32); enable wasm support there too.
 getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 axum = "0.8"
