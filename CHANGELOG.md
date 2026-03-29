@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/Stellar-Fluid/fluid/compare/v1.7.0...v1.8.0) (2026-03-29)
+
+
+### Features
+
+* **docs:** automated documentation generator and publishing pipeline ([2d8db9e](https://github.com/Stellar-Fluid/fluid/commit/2d8db9e8c9e70ed60a171c96dde0590bd828586e))
+
 # [1.7.0](https://github.com/Stellar-Fluid/fluid/compare/v1.6.0...v1.7.0) (2026-03-29)
 
 
