@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/Stellar-Fluid/fluid/compare/v1.4.0...v1.5.0) (2026-03-29)
+
+
+### Features
+
+* Add webhook delivery log UI in dashboard ([6d05b78](https://github.com/Stellar-Fluid/fluid/commit/6d05b78aa40f1422eecac8b4bd88708edca5b309))
+
 # [1.4.0](https://github.com/Stellar-Fluid/fluid/compare/v1.3.0...v1.4.0) (2026-03-29)
 
 
