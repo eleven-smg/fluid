@@ -89,17 +89,7 @@ import {
   updateChainHandler,
 } from "./handlers/adminChains";
 import { startChainRegistryHotReload, stopChainRegistryHotReload } from "./services/chainRegistryService";
-import {
-  deleteDeviceTokenHandler,
-  listDeviceTokensHandler,
-  registerDeviceTokenHandler,
-} from "./handlers/adminDeviceTokens";
-import {
-  SlackNotifier,
-  loadSlackNotifierOptionsFromEnv,
-} from "./services/slackNotifier";
-import { PagerDutyNotifier } from "./services/pagerDutyNotifier";
-import { initializeFcmNotifier } from "./services/fcmNotifier";
+
 import { initializeFeeManager } from "./services/feeManager";
 import { listTransactionsHandler } from "./handlers/adminTransactions";
 import { getSpendForecastHandler } from "./handlers/adminAnalytics";
@@ -111,6 +101,8 @@ import { initializeTreasuryRefill } from "./workers/treasuryRefill";
 import { initializeDigestWorker } from "./workers/digestWorker";
 import { transactionStore } from "./workers/transactionStore";
 import { TreasuryRebalancer } from "./services/treasuryRebalancer";
+import { dailyScoringWorker } from "./workers/dailyScoringWorker";
+import { crossChainSyncService } from "./services/crossChainSyncService";
 
 dotenv.config();
 const logger = createLogger({ component: "server" });
@@ -448,6 +440,76 @@ app.delete("/admin/chains/:id", (req: Request, res: Response) => {
   void deleteChainHandler(req, res);
 });
 
+// Cross-chain state sync management (Phase 11)
+app.get("/admin/cross-chain-sync/history", async (req: Request, res: Response) => {
+  try {
+    const history = await prisma.crossChainSync.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    res.json({ history });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch sync history" });
+  }
+});
+
+app.get("/admin/cross-chain-sync/status", async (req: Request, res: Response) => {
+  try {
+    // In a real implementation, we would query the contracts here.
+    // For the PoC, we'll return mock data or the last known state from the DB.
+    const lastSync = await prisma.crossChainSync.findFirst({
+      orderBy: { updatedAt: "desc" },
+    });
+    
+    // Default or mock values if no sync has happened yet
+    let stellarCount = 0;
+    let evmCount = 0;
+    
+    if (lastSync) {
+      const payload = JSON.parse(lastSync.payload);
+      const count = Number(payload.count);
+      stellarCount = count;
+      evmCount = count;
+    }
+
+    res.json({
+      stellarCount,
+      evmCount,
+      lastSyncAt: lastSync?.updatedAt || null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch sync status" });
+  }
+});
+
+app.post("/admin/cross-chain-sync/increment-stellar", async (req: Request, res: Response) => {
+  try {
+    logger.info("Manual Soroban increment triggered from admin");
+    // This would call the Soroban contract. For PoC, we simulate the success.
+    res.json({ 
+      ok: true, 
+      message: "Soroban increment initiated",
+      txHash: "MOCK_STELLAR_" + Math.random().toString(36).slice(2).toUpperCase()
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to initiate Soroban increment" });
+  }
+});
+
+app.post("/admin/cross-chain-sync/increment-evm", async (req: Request, res: Response) => {
+  try {
+    logger.info("Manual EVM increment triggered from admin");
+    // This would call the EVM contract. For PoC, we simulate the success.
+    res.json({ 
+      ok: true, 
+      message: "EVM increment initiated",
+      txHash: "0x" + Math.random().toString(16).slice(2).padStart(64, "0")
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to initiate EVM increment" });
+  }
+});
+
 app.use(notFoundHandler);
 app.use(createGlobalErrorHandler(slackNotifier));
 
@@ -478,6 +540,7 @@ async function shutdown(signal: string): Promise<void> {
   digestWorker?.stop();
   feeManager.stop();
   stopChainRegistryHotReload();
+  crossChainSyncService.stop();
 
   if (server) {
     server.close(() => process.exit(0));
@@ -585,7 +648,6 @@ try {
 
 // Daily scoring worker for intelligent rate limiting
 try {
-  const { dailyScoringWorker } = await import("./workers/dailyScoringWorker");
   dailyScoringWorker.start();
   logger.info("Daily scoring worker started");
 } catch (error) {
@@ -597,6 +659,13 @@ try {
   startChainRegistryHotReload();
 } catch (error) {
   logger.error({ ...serializeError(error) }, "Failed to start chain registry hot-reload");
+}
+
+// Cross-chain state sync PoC (Phase 11)
+try {
+  crossChainSyncService.start();
+} catch (error) {
+  logger.error({ ...serializeError(error) }, "Failed to start cross-chain sync service");
 }
 
 server = app.listen(PORT, () => {
