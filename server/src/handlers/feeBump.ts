@@ -1,121 +1,205 @@
+import StellarSdk, { Transaction } from "@stellar/stellar-sdk";
+import { Config, FeePayerAccount, pickFeePayerAccount } from "../config";
 import { NextFunction, Request, Response } from "express";
-import StellarSdk from "@stellar/stellar-sdk";
-import { Config, pickFeePayerAccount } from "../config";
 import { AppError } from "../errors/AppError";
 import { ApiKeyConfig } from "../middleware/apiKeys";
-import { syncTenantFromApiKey } from "../models/tenantStore";
+import { Tenant, syncTenantFromApiKey } from "../models/tenantStore";
 import { recordSponsoredTransaction } from "../models/transactionLedger";
-import { FeeBumpRequest, FeeBumpSchema } from "../schemas/feeBump";
+import { FeeBumpRequest, FeeBumpSchema, FeeBumpBatchRequest, FeeBumpBatchSchema } from "../schemas/feeBump";
 import { checkTenantDailyQuota } from "../services/quota";
-import { transactionStore } from "../workers/transactionStore";
-
 import { calculateFeeBumpFee } from "../utils/feeCalculator";
-import { signTransaction, signTransactionWithVault } from "../signing";
+import { verifyXdrNetwork } from "../utils/networkVerification";
+import { MockPriceOracle, validateSlippage } from "../utils/priceOracle";
+import { priceService } from "../services/priceService";
+import { transactionMilestoneService } from "../services/discordMilestones";
+import { transactionStore } from "../workers/transactionStore";
+import { prisma } from "../utils/db";
+import { classifyTransactionCategory } from "../services/transactionCategorizer";
+import { getFeeManager } from "../services/feeManager";
+import { SponsorFactory } from "../sponsors/factory";
+import { StellarFeeSponsor } from "../sponsors/stellar";
 
-interface FeeBumpResponse {
-  xdr: string;
-  status: string;
-  hash?: string;
-  fee_payer: string;
-}
+/**
+ * @openapi
+ * /fee-bump:
+ *   post:
+ *     summary: Wrap a transaction with a fee-bump envelope
+ *     description: >
+ *       Accepts a signed Stellar inner transaction XDR and returns a
+ *       fee-bumped version signed by the Fluid fee-payer account.
+ *       Optionally submits the transaction directly to Horizon.
+ *     tags:
+ *       - Fee Bump
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/FeeBumpRequest'
+ *           examples:
+ *             minimal:
+ *               summary: Wrap only (no submission)
+ *               value:
+ *                 xdr: "AAAAAgAAAAB..."
+ *                 submit: false
+ *             submit:
+ *               summary: Wrap and submit to Horizon
+ *               value:
+ *                 xdr: "AAAAAgAAAAB..."
+ *                 submit: true
+ *     responses:
+ *       200:
+ *         description: Fee-bumped transaction XDR (and hash if submitted).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/FeeBumpResponse'
+ *             examples:
+ *               ready:
+ *                 summary: XDR ready for client submission
+ *                 value:
+ *                   xdr: "AAAABQAAAABf..."
+ *                   status: ready
+ *                   fee_payer: "GABC...XYZ"
+ *               submitted:
+ *                 summary: Submitted to Horizon
+ *                 value:
+ *                   xdr: "AAAABQAAAABf..."
+ *                   status: submitted
+ *                   hash: "a1b2c3..."
+ *                   fee_payer: "GABC...XYZ"
+ *       400:
+ *         description: >
+ *           Invalid request — bad XDR, unsigned transaction, wrong network,
+ *           unsupported asset, or slippage exceeded.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               invalidXdr:
+ *                 summary: Malformed XDR
+ *                 value:
+ *                   error: "Invalid XDR: ..."
+ *                   code: INVALID_XDR
+ *               unsignedTx:
+ *                 summary: Transaction not signed
+ *                 value:
+ *                   error: "Inner transaction must be signed before fee-bumping"
+ *                   code: INVALID_XDR
+ *       401:
+ *         description: Missing API key.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               missingKey:
+ *                 summary: No x-api-key header
+ *                 value:
+ *                   error: "Missing API key. Provide a valid x-api-key header to access this endpoint."
+ *                   code: AUTH_FAILED
+ *       403:
+ *         description: Invalid/revoked API key or daily quota exceeded.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               quotaExceeded:
+ *                 summary: Tier quota exhausted
+ *                 value:
+ *                   error: "Tier limit exceeded. Spend 1000000/500000 stroops..."
+ *                   code: QUOTA_EXCEEDED
+ *       500:
+ *         description: Internal server error or Horizon submission failure.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               submissionFailed:
+ *                 summary: Horizon rejected the transaction
+ *                 value:
+ *                   error: "Transaction submission failed: ..."
+ *                   code: SUBMISSION_FAILED
+ *
+ * /fee-bump/batch:
+ *   post:
+ *     summary: Wrap multiple transactions in a single request
+ *     description: >
+ *       Accepts an array of signed inner transaction XDRs and returns
+ *       fee-bumped versions for each, processed concurrently.
+ *     tags:
+ *       - Fee Bump
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/FeeBumpBatchRequest'
+ *     responses:
+ *       200:
+ *         description: Array of fee-bump results, one per input XDR.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/FeeBumpResponse'
+ *       400:
+ *         description: Validation error on one or more XDRs.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       401:
+ *         description: Missing API key.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       500:
+ *         description: Internal server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+// processFeeBump and legacy types removed in favor of StellarFeeSponsor
 
 export async function feeBumpHandler(
   req: Request,
   res: Response,
   next: NextFunction,
-  config: Config,
+  config: Config
 ): Promise<void> {
   try {
     const result = FeeBumpSchema.safeParse(req.body);
+
     if (!result.success) {
       console.warn(
         "Validation failed for fee-bump request:",
-        result.error.format(),
+        result.error.format()
       );
 
       return next(
         new AppError(
           `Validation failed: ${JSON.stringify(result.error.format())}`,
           400,
-          "INVALID_XDR",
-        ),
+          "INVALID_XDR"
+        )
       );
     }
 
     const body: FeeBumpRequest = result.data;
+    const chainId = body.chainId || "stellar";
+    const sponsor = SponsorFactory.getSponsor(chainId as any);
 
-    // Pick a fee payer account using Round Robin
-    const feePayerAccount = pickFeePayerAccount(config);
-    console.log(
-      `Received fee-bump request | fee_payer: ${feePayerAccount.publicKey}`
-    );
-
-    let innerTransaction: any;
-    try {
-      innerTransaction = StellarSdk.TransactionBuilder.fromXDR(
-        body.xdr,
-        config.networkPassphrase
-      );
-    } catch (error: any) {
-      console.error("Failed to parse XDR:", error.message);
-      return next(
-        new AppError(`Invalid XDR: ${error.message}`, 400, "INVALID_XDR"),
-      );
-    }
-
-    // Safety check: Reject transactions with too many operations (DoS protection)
-    const operationCount = innerTransaction.operations?.length || 0;
-    if (operationCount > config.maxOperations) {
-      console.warn(
-        `Transaction has too many operations: ${operationCount} (max: ${config.maxOperations})`,
-      );
-      return next(
-        new AppError(
-          `Transaction contains ${operationCount} operations, which exceeds the maximum allowed ${config.maxOperations}`,
-          400,
-          "TOO_MANY_OPERATIONS",
-        ),
-      );
-    }
-
-    if (
-      !innerTransaction.signatures ||
-      innerTransaction.signatures.length === 0
-    ) {
-      return next(
-        new AppError(
-          "Inner transaction must be signed before fee-bumping",
-          400,
-          "UNSIGNED_TRANSACTION",
-        ),
-      );
-    }
-
-    const innerTransactionAny = innerTransaction as any;
-    const isAlreadyFeeBumped =
-      innerTransaction instanceof StellarSdk.FeeBumpTransaction ||
-      innerTransactionAny?.type === "fee-bump" ||
-      innerTransactionAny?.feeBumpTransaction != null ||
-      (typeof innerTransactionAny === "object" &&
-        "feeBumpTransaction" in innerTransactionAny);
-
-    if (isAlreadyFeeBumped) {
-      // Needed for security auditing / ops visibility: double-bump attempts are rejected early.
-      console.warn(
-        "Rejected fee-bump request: Cannot fee-bump an already fee-bumped transaction",
-      );
-      return next(
-        new AppError(
-          "Cannot fee-bump an already fee-bumped transaction",
-          400,
-          "ALREADY_FEE_BUMPED",
-        ),
-      );
-    }
-
-    const baseFeeAmount = Math.floor(config.baseFee * config.feeMultiplier);
-
-    // Use extracted utility for correct fee calculation
     const apiKeyConfig = res.locals.apiKey as ApiKeyConfig | undefined;
     if (!apiKeyConfig) {
       res.status(500).json({
@@ -123,104 +207,106 @@ export async function feeBumpHandler(
       });
       return;
     }
-    // Extract operation count safely
-    const operationCount = innerTransaction.operations?.length || 0;
-    const feeAmount = calculateFeeBumpFee(
-      operationCount,
-      config.baseFee,
-      config.feeMultiplier
-    );
-
-    console.log("Fee calculation:", {
-      operationCount,
-      baseFee: config.baseFee,
-      multiplier: config.feeMultiplier,
-      finalFee: feeAmount,
-    });
 
     const tenant = syncTenantFromApiKey(apiKeyConfig);
-    const quotaCheck = checkTenantDailyQuota(tenant, feeAmount);
-    if (!quotaCheck.allowed) {
-      res.status(403).json({
-        error: "Daily fee sponsorship quota exceeded",
-        currentSpendStroops: quotaCheck.currentSpendStroops,
-        attemptedFeeStroops: feeAmount,
-        dailyQuotaStroops: quotaCheck.dailyQuotaStroops,
-      });
-      return;
-    }
+    const feePayerAccount = pickFeePayerAccount(config);
 
-    const feeBumpTx = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
-      feePayerAccount.keypair,
-      feeAmount,
-      innerTransaction,
-      config.networkPassphrase
-    );
-
-    if (feePayerAccount.secretSource.type === "env") {
-      await signTransaction(feeBumpTx, feePayerAccount.secretSource.secret);
-    } else {
-      if (!config.vault) {
-        throw new Error("Vault config missing for vault-backed fee payer signing");
+    // Prepare chain-specific params
+    let params: any = { ...body, config, tenant, feePayerAccount };
+    
+    // Stellar-specific validation (moved from handler to maintain compatibility check)
+    if (chainId === "stellar") {
+      if (!body.xdr) throw new AppError("Stellar requires xdr field", 400, "INVALID_XDR");
+      
+      const networkCheck = verifyXdrNetwork(body.xdr, config.networkPassphrase);
+      if (!networkCheck.valid) {
+        throw new AppError(networkCheck.errorMessage ?? "Network mismatch", 400, "NETWORK_MISMATCH");
       }
 
-      await signTransactionWithVault(
-        feeBumpTx,
-        feePayerAccount.publicKey,
-        config.vault,
-        feePayerAccount.secretSource.secretPath
+      // Whitelist check
+      if (body.token) {
+        const supportedAssets = config.supportedAssets ?? [];
+        const isWhitelisted = supportedAssets.some((asset) => {
+          const assetId = asset.issuer ? `${asset.code}:${asset.issuer}` : asset.code;
+          return body.token === assetId;
+        });
+
+        if (!isWhitelisted) {
+          throw new AppError(
+            `Whitelisting failed: Asset "${body.token}" is not accepted for fee sponsorship.`,
+            400,
+            "UNSUPPORTED_ASSET",
+          );
+        }
+      }
+    }
+
+    const response = await sponsor.buildSponsoredTx(params);
+
+    res.json({
+      xdr: chainId === "stellar" ? response.tx : undefined,
+      tx: response.tx,
+      status: response.status,
+      hash: response.hash,
+      fee_payer: response.feePayer,
+    });
+  } catch (error: any) {
+    console.error("Error processing fee-bump request:", error);
+    next(error);
+  }
+}
+
+export async function feeBumpBatchHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  config: Config
+): Promise<void> {
+  try {
+    const parsedBody = FeeBumpBatchSchema.safeParse(req.body);
+
+    if (!parsedBody.success) {
+      console.warn(
+        "Validation failed for fee-bump batch request:",
+        parsedBody.error.format()
+      );
+
+      return next(
+        new AppError(
+          `Validation failed: ${JSON.stringify(parsedBody.error.format())}`,
+          400,
+          "INVALID_XDR"
+        )
       );
     }
 
-    recordSponsoredTransaction(tenant.id, feeAmount);
+    const body: FeeBumpBatchRequest = parsedBody.data;
 
-    const feeBumpXdr = feeBumpTx.toXDR();
-    console.log(
-      `Fee-bump transaction created | fee_payer: ${feePayerAccount.publicKey}`
-    );
-
-    const submit = body.submit || false;
-    const status = submit ? "submitted" : "ready";
-
-    if (submit && config.horizonUrl) {
-      const server = new StellarSdk.Horizon.Server(config.horizonUrl);
-
-      server
-        .submitTransaction(feeBumpTx)
-        .then((result: any) => {
-          // Track the submitted transaction
-          transactionStore.addTransaction(result.hash, tenant.id, "submitted");
-
-          const response: FeeBumpResponse = {
-            xdr: feeBumpXdr,
-            status: "submitted",
-            hash: result.hash,
-            fee_payer: feePayerAccount.publicKey,
-          };
-          res.json(response);
-        })
-        .catch((error: any) => {
-          console.error("Transaction submission failed:", error);
-          next(
-            new AppError(
-              `Transaction submission failed: ${error.message}`,
-              500,
-              "SUBMISSION_FAILED",
-            ),
-          );
-        });
-      return;
+    const apiKeyConfig = res.locals.apiKey as ApiKeyConfig | undefined;
+    if (!apiKeyConfig) {
+      res.status(500).json({ error: "Missing tenant context for fee sponsorship" });
       return;
     }
 
-    const response: FeeBumpResponse = {
-      xdr: feeBumpXdr,
-      status,
-      fee_payer: feePayerAccount.publicKey,
-    };
-    res.json(response);
+    const tenant = syncTenantFromApiKey(apiKeyConfig);
+    const feePayerAccount = pickFeePayerAccount(config);
+    const stellarSponsor = new StellarFeeSponsor();
+    
+    const results = await Promise.all(
+      body.xdrs.map((xdr) => 
+        stellarSponsor.buildSponsoredTx({
+          xdr,
+          submit: body.submit ?? false,
+          config,
+          tenant,
+          feePayerAccount
+        })
+      )
+    );
+
+    res.json(results);
   } catch (error: any) {
-    console.error("Error processing fee-bump request:", error);
+    console.error("Error processing fee-bump batch request:", error);
     next(error);
   }
 }

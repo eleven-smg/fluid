@@ -1,16 +1,16 @@
 # Signing Benchmark Report
 
-Generated: 2026-03-25T11:59:56.871Z
+Generated: 2026-03-25T17:12:45.461Z
 Iterations: 5000
 Warmup iterations: 500
 
 | Implementation | Avg (ms) | P50 (ms) | P95 (ms) | Ops/sec | Relative to Node |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Node stellar-sdk | 0.0867 | 0.0751 | 0.1390 | 11528.72 | 1.00x |
-| Rust ed25519-dalek | 0.1556 | 0.1501 | 0.1749 | 6426.12 | 0.56x |
+| Node stellar-sdk | 0.0868 | 0.0748 | 0.1418 | 11526.93 | 1.00x |
+| Rust ed25519-dalek | 0.1515 | 0.1520 | 0.1724 | 6602.16 | 0.57x |
 
-Node min/max: 0.0648 ms / 4.0020 ms
-Rust min/max: 0.1214 ms / 6.6888 ms
+Node min/max: 0.0646 ms / 3.9932 ms
+Rust min/max: 0.1234 ms / 0.5097 ms
 
 Methodology:
 - Builds one unsigned fee-bump transaction per benchmark run.
