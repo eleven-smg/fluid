@@ -118,6 +118,17 @@ import { getFeeMultiplierHandler } from "./handlers/adminFeeMultiplier";
 import { estimateFeeHandler } from "./handlers/estimate";
 import { listAuditLogsHandler } from "./handlers/adminAuditLogs";
 import { startAuditSummaryWorker } from "./services/auditLog";
+import {
+  listGrantersHandler,
+  getGranterHandler,
+  createGranterHandler,
+  updateGranterHandler,
+  deleteGranterHandler,
+  grantAllowanceHandler,
+  revokeAllowanceHandler,
+  listAllowancesHandler,
+  queryOnChainHandler,
+} from "./handlers/adminCosmosFeeGrant";
 
 dotenv.config();
 const logger = createLogger({ component: "server" });
@@ -421,6 +432,35 @@ app.post("/admin/digest/send-now", sendDigestNowHandler);
 // Audit logs
 app.get("/admin/audit-logs", (req: Request, res: Response) => {
   void listAuditLogsHandler(req, res);
+});
+
+// Cosmos FeeGrant — granter config + allowance management
+app.get("/admin/cosmos/granters", (req: Request, res: Response) => {
+  void listGrantersHandler(req, res);
+});
+app.get("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
+  void getGranterHandler(req, res);
+});
+app.post("/admin/cosmos/granters", (req: Request, res: Response) => {
+  void createGranterHandler(req, res);
+});
+app.patch("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
+  void updateGranterHandler(req, res);
+});
+app.delete("/admin/cosmos/granters/:id", (req: Request, res: Response) => {
+  void deleteGranterHandler(req, res);
+});
+app.post("/admin/cosmos/granters/:id/grant", (req: Request, res: Response) => {
+  void grantAllowanceHandler(req, res);
+});
+app.post("/admin/cosmos/granters/:id/revoke", (req: Request, res: Response) => {
+  void revokeAllowanceHandler(req, res);
+});
+app.get("/admin/cosmos/granters/:id/allowances", (req: Request, res: Response) => {
+  void listAllowancesHandler(req, res);
+});
+app.get("/admin/cosmos/granters/:id/on-chain", (req: Request, res: Response) => {
+  void queryOnChainHandler(req, res);
 });
 
 // Chain registry — supported network management (Phase 11)
