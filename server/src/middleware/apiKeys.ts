@@ -12,6 +12,9 @@ import {
   toTierCode,
 } from "../models/subscriptionTier";
 
+export const VALID_CHAINS = ["stellar", "evm", "solana", "cosmos"] as const;
+export type Chain = (typeof VALID_CHAINS)[number];
+
 export interface ApiKeyConfig {
   key: string;
   tenantId: string;
@@ -26,6 +29,16 @@ export interface ApiKeyConfig {
   windowMs: number;
   dailyQuotaStroops: number;
   isSandbox: boolean;
+  allowedChains: Chain[];
+}
+
+function parseAllowedChains(raw?: string | null): Chain[] {
+  if (!raw) return ["stellar"];
+  const chains = raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is Chain => (VALID_CHAINS as readonly string[]).includes(s));
+  return chains.length > 0 ? chains : ["stellar"];
 }
 
 const API_KEYS = new Map<string, ApiKeyConfig>();
@@ -100,6 +113,8 @@ export async function apiKeyMiddleware(
         "Free") as SubscriptionTierName;
       const resolvedRateLimit = tierRecord?.rateLimit ?? keyRecord.maxRequests;
 
+      const allowedChains = parseAllowedChains(keyRecord.allowedChains);
+
       const apiKeyConfig: ApiKeyConfig = {
         key: keyRecord.key,
         tenantId: keyRecord.tenantId,
@@ -114,6 +129,7 @@ export async function apiKeyMiddleware(
         windowMs: keyRecord.windowMs,
         dailyQuotaStroops: Number(keyRecord.dailyQuotaStroops),
         isSandbox: keyRecord.isSandbox ?? false,
+        allowedChains,
       };
 
       // Cache the key for future requests. Non-blocking: don't fail the request on cache errors.
@@ -168,4 +184,27 @@ export function deleteApiKey(key: string): void {
   API_KEYS.delete(key);
   // Also invalidate cache
   invalidateApiKeyCache(key).catch(() => {});
+}
+
+/**
+ * Middleware factory that rejects requests if the API key is not authorized
+ * for the given chain. Must be placed after `apiKeyMiddleware`.
+ */
+export function requireChain(chain: Chain) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const config = res.locals.apiKey as ApiKeyConfig | undefined;
+    if (!config) {
+      return next(new AppError("Missing API key context.", 401, "AUTH_FAILED"));
+    }
+    if (!config.allowedChains.includes(chain)) {
+      return next(
+        new AppError(
+          `API key is not authorized for the "${chain}" chain. Allowed: ${config.allowedChains.join(", ")}.`,
+          403,
+          "CHAIN_NOT_ALLOWED",
+        ),
+      );
+    }
+    next();
+  };
 }

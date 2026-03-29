@@ -10,6 +10,7 @@ import { AppError } from "./errors/AppError";
 import {
   listApiKeysHandler,
   revokeApiKeyHandler,
+  updateApiKeyChainsHandler,
   upsertApiKeyHandler,
 } from "./handlers/adminApiKeys";
 import {
@@ -366,6 +367,7 @@ app.post(
 app.get("/admin/api-keys", listApiKeysHandler);
 app.post("/admin/api-keys", upsertApiKeyHandler);
 app.patch("/admin/api-keys/:key/revoke", revokeApiKeyHandler);
+app.patch("/admin/api-keys/:key/chains", updateApiKeyChainsHandler);
 app.delete("/admin/api-keys/:key", revokeApiKeyHandler);
 app.get("/admin/subscription-tiers", listSubscriptionTiersHandler);
 app.patch(
