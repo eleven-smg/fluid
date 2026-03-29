@@ -41,7 +41,10 @@ import {
 } from "./handlers/adminSubscriptionTiers";
 import { badgeHandler } from "./handlers/badge";
 import { feeBumpBatchHandler, feeBumpHandler } from "./handlers/feeBump";
-import { playgroundFeeBumpHandler } from "./handlers/playground";
+import {
+  playgroundContractImportHandler,
+  playgroundFeeBumpHandler,
+} from "./handlers/playground";
 import {
   incidentsHandler,
   statusPageHandler,
@@ -267,6 +270,15 @@ const playgroundLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+app.post(
+  "/playground/contract-import",
+  cors({ origin: "*" }),
+  playgroundLimiter,
+  (req: Request, res: Response, next: NextFunction) => {
+    void playgroundContractImportHandler(req, res).catch(next);
+  },
+);
 
 app.post(
   "/playground/fee-bump",
