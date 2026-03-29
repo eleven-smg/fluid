@@ -142,6 +142,12 @@ export default async function AdminDashboard() {
               Sandbox
             </Link>
             <Link
+              href="/admin/chains"
+              className="inline-flex min-h-10 items-center justify-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            >
+              Chain registry
+            </Link>
+            <Link
               href="/admin/signers"
               className="inline-flex min-h-10 items-center justify-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
             >

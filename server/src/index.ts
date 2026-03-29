@@ -82,6 +82,23 @@ import {
   digestUnsubscribeHandler,
   sendDigestNowHandler,
 } from "./handlers/digest";
+import {
+  createChainHandler,
+  deleteChainHandler,
+  listChainsHandler,
+  updateChainHandler,
+} from "./handlers/adminChains";
+import { startChainRegistryHotReload, stopChainRegistryHotReload } from "./services/chainRegistryService";
+  deleteDeviceTokenHandler,
+  listDeviceTokensHandler,
+  registerDeviceTokenHandler,
+} from "./handlers/adminDeviceTokens";
+import {
+  SlackNotifier,
+  loadSlackNotifierOptionsFromEnv,
+} from "./services/slackNotifier";
+import { PagerDutyNotifier } from "./services/pagerDutyNotifier";
+import { initializeFcmNotifier } from "./services/fcmNotifier";
 import { initializeFeeManager } from "./services/feeManager";
 import { listTransactionsHandler } from "./handlers/adminTransactions";
 import { getSpendForecastHandler } from "./handlers/adminAnalytics";
@@ -381,6 +398,20 @@ app.get("/admin/digest/unsubscribe", digestUnsubscribeHandler);
 app.post("/admin/digest/unsubscribe", digestUnsubscribeHandler);
 app.post("/admin/digest/send-now", sendDigestNowHandler);
 
+// Chain registry — supported network management (Phase 11)
+app.get("/admin/chains", (req: Request, res: Response) => {
+  void listChainsHandler(req, res);
+});
+app.post("/admin/chains", (req: Request, res: Response) => {
+  void createChainHandler(req, res);
+});
+app.patch("/admin/chains/:id", (req: Request, res: Response) => {
+  void updateChainHandler(req, res);
+});
+app.delete("/admin/chains/:id", (req: Request, res: Response) => {
+  void deleteChainHandler(req, res);
+});
+
 app.use(notFoundHandler);
 app.use(createGlobalErrorHandler(slackNotifier));
 
@@ -410,6 +441,7 @@ async function shutdown(signal: string): Promise<void> {
   incidentMonitor?.stop();
   digestWorker?.stop();
   feeManager.stop();
+  stopChainRegistryHotReload();
 
   if (server) {
     server.close(() => process.exit(0));
@@ -513,6 +545,13 @@ try {
   }
 } catch (error) {
   logger.error({ ...serializeError(error) }, "Failed to start daily digest worker");
+}
+
+// Chain registry hot-reload (reads enabled chains from DB on interval)
+try {
+  startChainRegistryHotReload();
+} catch (error) {
+  logger.error({ ...serializeError(error) }, "Failed to start chain registry hot-reload");
 }
 
 server = app.listen(PORT, () => {
