@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/Stellar-Fluid/fluid/compare/v1.21.1...v1.22.0) (2026-03-30)
+
+
+### Features
+
+* role-based access control for admin dashboard ([827d216](https://github.com/Stellar-Fluid/fluid/commit/827d21618ea2a1da9281a3e18bfcc47b98935f05)), closes [#208](https://github.com/Stellar-Fluid/fluid/issues/208)
+
 ## [1.21.1](https://github.com/Stellar-Fluid/fluid/compare/v1.21.0...v1.21.1) (2026-03-30)
 
 
