@@ -9,7 +9,9 @@
     "lint": "eslint",
     "format:check": "echo \"No format check configured\"",
     "test:e2e": "playwright test",
-    "docs": "typedoc"
+    "docs": "typedoc",
+    "storybook": "storybook dev -p 6006",
+    "storybook:build": "storybook build"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -43,16 +45,20 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@storybook/nextjs": "^8.6.12",
+    "@storybook/addon-themes": "^8.6.12",
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "chromatic": "^12.5.4",
     "eslint": "^9",
     "eslint-config-next": "15.5.14",
     "playwright": "^1.58.2",
     "puppeteer": "^24.40.0",
+    "storybook": "^8.6.12",
     "tailwindcss": "^4",
     "typedoc": "^0.28.18",
     "typescript": "^5"
