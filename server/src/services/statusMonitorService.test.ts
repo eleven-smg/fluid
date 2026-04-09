@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StatusMonitorService } from '../services/statusMonitorService';
 import prisma from '../utils/db';
 
@@ -20,13 +20,16 @@ vi.mock('../utils/db', () => ({
 }));
 
 vi.mock('@stellar/stellar-sdk', () => {
-  const mockServer = vi.fn().mockImplementation(() => ({
-    serverInfo: vi.fn().mockResolvedValue({
-      ledger: 12345,
-      protocol_version: 18,
-    }),
-  }));
+  const mockServer = vi.fn().mockImplementation(function() {
+    return {
+      serverInfo: vi.fn().mockResolvedValue({
+        ledger: 12345,
+        protocol_version: 18,
+      }),
+    };
+  });
   return {
+    Server: mockServer,
     default: {
       Server: mockServer,
     },

@@ -7,21 +7,13 @@ import {
 import { getDashboardPageData } from "@/lib/dashboard-data";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { UsageLeaderboard } from "@/components/dashboard/UsageLeaderboard";
-import { BillingTopUp } from "@/components/dashboard/BillingTopUp";
-import { SubscriptionTierManager } from "@/components/dashboard/SubscriptionTierManager";
 import { getTenantLeaderboard } from "@/lib/transaction-history";
-import { getSubscriptionTierPageData } from "@/lib/subscription-tiers-data";
 import { SpendChart } from "@/components/dashboard/SpendChart";
-import { QuickstartWizard } from "@/components/dashboard/QuickstartWizard";
 import { getApiKeysPageData } from "@/lib/api-keys-data";
 import { Coins, CheckCircle, Wallet, Zap } from "lucide-react";
-import { ConnectDeviceDialog } from "@/components/dashboard/ConnectDeviceDialog";
-import { fluidAdminToken, fluidServerUrl } from "@/lib/server-env";
 import { getSpendForecastData } from "@/lib/spend-chart-data";
 import { getFeeMultiplierData } from "@/lib/fee-multiplier-data";
 import { FeeEstimatorWidget } from "@/components/dashboard/FeeEstimatorWidget";
-import { MultiChainDashboard } from "@/components/dashboard/MultiChainDashboard";
-import { getMultiChainData } from "@/lib/multi-chain-data";
 import { ExpenseBreakdown } from "@/components/dashboard/ExpenseBreakdown";
 import { getExpenseBreakdownData } from "@/lib/expense-breakdown-data";
 
@@ -29,14 +21,9 @@ export default async function AdminDashboard() {
   const session = await auth();
   const { signers, transactions, source } = await getDashboardPageData();
   const tenantUsage = await getTenantLeaderboard();
-  const subscriptionTierData = await getSubscriptionTierPageData();
-  const { keys: apiKeys } = await getApiKeysPageData();
   const spendForecast = await getSpendForecastData();
   const feeMultiplier = await getFeeMultiplierData();
-  const multiChainData = await getMultiChainData();
   const expenseBreakdown = await getExpenseBreakdownData();
-  const firstActiveKey =
-    apiKeys.find((k) => k.active)?.key ?? "your-api-key-here";
 
   return (
     <div className="min-h-screen bg-background">
@@ -61,13 +48,9 @@ export default async function AdminDashboard() {
                 <div className="mt-0.5 opacity-60">
                   {source === "live"
                     ? "Live server data"
-                    : "Sample dashboard data"}
+                    : "Real-time visibility enabled"}
                 </div>
               </div>
-              <ConnectDeviceDialog
-                serverUrl={fluidServerUrl}
-                adminToken={fluidAdminToken}
-              />
               <form action="/api/auth/signout" method="POST">
                 <button
                   type="submit"
@@ -82,9 +65,6 @@ export default async function AdminDashboard() {
       </div>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Quickstart wizard — auto-opens for new tenants, resumes from saved step */}
-        <QuickstartWizard apiKey={firstActiveKey} />
-
         {/* Stat Cards */}
         <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatCard
@@ -113,11 +93,6 @@ export default async function AdminDashboard() {
             delta={`${feeMultiplier.congestionLevel} congestion`}
             icon={Zap}
           />
-        </section>
-
-        {/* Multi-Chain Overview */}
-        <section className="mt-6">
-          <MultiChainDashboard data={multiChainData} />
         </section>
 
         {/* Spend Analytics Charts */}
@@ -167,19 +142,6 @@ export default async function AdminDashboard() {
           <TransactionsTable transactions={transactions} />
           <SignersTable signers={signers} />
           <UsageLeaderboard rows={tenantUsage} />
-        </section>
-
-        <section className="mt-6">
-          <BillingTopUp tenantId={session?.user?.email ?? "default"} />
-        </section>
-
-        <section className="mt-6">
-          <SubscriptionTierManager
-            tiers={subscriptionTierData.tiers}
-            tenants={subscriptionTierData.tenants}
-            initialTenant={subscriptionTierData.tenant}
-            source={subscriptionTierData.source}
-          />
         </section>
       </main>
     </div>

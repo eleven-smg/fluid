@@ -193,7 +193,6 @@ export function SARTable({ data }: SARTableProps) {
 
   return (
     <div className="space-y-6">
-      {/* Stats bar */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-border/50 glass px-5 py-4 shadow-sm transition-all duration-300 hover:shadow-lg hover:-translate-y-1">
           <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground opacity-70">Pending Review</p>
@@ -213,7 +212,7 @@ export function SARTable({ data }: SARTableProps) {
         </div>
       </div>
 
-      {/* Filter tabs + export */}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
           {filters.map(f => (
@@ -243,7 +242,7 @@ export function SARTable({ data }: SARTableProps) {
         </button>
       </div>
 
-      {/* Table */}
+
       <div className="overflow-hidden rounded-3xl border border-border/50 glass shadow-sm">
         {filtered.length === 0 ? (
           <div className="px-6 py-12 text-center text-sm text-slate-500">
@@ -306,7 +305,7 @@ export function SARTable({ data }: SARTableProps) {
         )}
       </div>
 
-      {/* Review dialog */}
+
       {reviewing && (
         <ReviewDialog
           report={reviewing}
@@ -316,7 +315,7 @@ export function SARTable({ data }: SARTableProps) {
         />
       )}
 
-      {/* Toast */}
+
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 rounded-xl bg-slate-900 px-5 py-3 text-sm font-medium text-white shadow-lg">
           {toast}

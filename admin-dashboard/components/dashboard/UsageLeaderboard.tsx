@@ -7,7 +7,6 @@ interface UsageLeaderboardProps {
   transactionsBasePath?: string;
 }
 
-// Palette cycles through distinct hues for each rank
 const BAR_COLORS = [
   "bg-sky-500",
   "bg-violet-500",
@@ -42,7 +41,6 @@ export function UsageLeaderboard({
 
   return (
     <div className="overflow-hidden rounded-3xl border border-border/50 glass  shadow-sm">
-      {/* Header */}
       <div className="flex flex-col gap-3 border-b border-border/50 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-black tracking-tight text-foreground">
@@ -64,7 +62,6 @@ export function UsageLeaderboard({
         </div>
       </div>
 
-      {/* Rows */}
       <ul className="divide-y divide-slate-100">
         {sorted.map((row, index) => {
           const costPct = Math.max(2, (row.totalCostStroops / maxCost) * 100);

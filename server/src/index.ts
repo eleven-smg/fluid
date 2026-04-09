@@ -13,11 +13,6 @@ import {
   upsertApiKeyHandler,
 } from "./handlers/adminApiKeys";
 import {
-  listBridgeSettlementsHandler,
-  resolveBridgeSettlementHandler,
-  refundBridgeSettlementHandler,
-} from "./handlers/adminBridgeSettlements";
-import {
   deleteDeviceTokenHandler,
   listDeviceTokensHandler,
   registerDeviceTokenHandler,
@@ -46,10 +41,6 @@ import {
 } from "./handlers/adminSubscriptionTiers";
 import { badgeHandler } from "./handlers/badge";
 import { feeBumpBatchHandler, feeBumpHandler } from "./handlers/feeBump";
-import {
-  playgroundContractImportHandler,
-  playgroundFeeBumpHandler,
-} from "./handlers/playground";
 import {
   incidentsHandler,
   statusPageHandler,
@@ -101,14 +92,6 @@ import {
   updateChainHandler,
 } from "./handlers/adminChains";
 import {
-  startChainRegistryHotReload,
-  stopChainRegistryHotReload,
-} from "./services/chainRegistryService";
-import { initializeFeeManager } from "./services/feeManager";
-import { initializeOFACScreening, stopOFACScreening } from "./services/ofacScreening";
-import { initializeRegionalDbs, DEFAULT_REGION } from "./services/regionRouter";
-import { requirePermission } from "./utils/adminAuth";
-import {
   adminLoginHandler,
   listAdminUsersHandler,
   createAdminUserHandler,
@@ -127,9 +110,27 @@ import { getSpendForecastHandler } from "./handlers/adminAnalytics";
 import { getFeeMultiplierHandler } from "./handlers/adminFeeMultiplier";
 import { estimateFeeHandler } from "./handlers/estimate";
 import { initializeDigestWorker } from "./workers/digestWorker";
+import { initializeTenantErasureWorker, TenantErasureWorker } from "./workers/tenantErasureWorker";
 
 import { initializeTreasuryRefill } from "./workers/treasuryRefill";
 import { initializeTreasurySweeper } from "./tasks/sweeper";
+import { TreasuryRebalancer } from "./services/treasuryRebalancer";
+import { initializeFeeManager } from "./services/feeManager";
+import { initializeOFACScreening, stopOFACScreening } from "./services/ofacScreening";
+import { initializeRegionalDbs, DEFAULT_REGION } from "./services/regionRouter";
+import { requirePermission } from "./utils/adminAuth";
+import { ensureAuditLogTableIntegrity } from "./services/auditLogger";
+import { ipFilterMiddleware } from "./middleware/ipFilter";
+import { deleteCurrentTenantHandler, deleteTenantByAdminHandler } from "./handlers/tenantErasure";
+import { listAuditLogsHandler } from "./handlers/adminAuditLogs";
+import { exportAuditLogHandler } from "./handlers/adminAuditLog";
+import { getMultiChainStatsHandler } from "./handlers/adminMultiChainStats";
+import { startAuditSummaryWorker } from "./services/auditLog";
+import { dailyScoringWorker } from "./workers/dailyScoringWorker";
+import {
+  startChainRegistryHotReload,
+  stopChainRegistryHotReload,
+} from "./services/chainRegistryService";
 
 const logger = createLogger({ component: "server" });
 const config = loadConfig();
@@ -170,47 +171,20 @@ treasuryRebalancer.setAlertService(alertService);
 
 const app = express();
 
-// Respect X-Forwarded-For if running behind a proxy
-if (process.env.TRUST_PROXY === "true") {
-  app.set("trust proxy", true);
-}
-
 app.use(ipFilterMiddleware);
 app.use(express.json());
 app.use(soc2RequestLogger);
 
-// Stamp every response with the instance's home region for observability
 app.use((_req, res, next) => {
   res.setHeader("X-Fluid-Region", DEFAULT_REGION);
   next();
 });
 
-// Swagger UI — available at /docs
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-// Raw OpenAPI JSON spec
 app.get("/docs.json", (_req: Request, res: Response) => {
   res.setHeader("Content-Type", "application/json");
   res.send(swaggerSpec);
 });
-
-// Use Redis-backed store for global IP rate limiting. Falls back to memory store if Redis unavailable.
-const windowSeconds = Math.max(1, Math.ceil(config.rateLimitWindowMs / 1000));
-let limiterStore: any = undefined;
-try {
-  // Prefer a maintained adapter if available: rate-limit-redis
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const RateLimitRedis = require("rate-limit-redis");
-  const RedisStore = RateLimitRedis.default || RateLimitRedis;
-  // Many adapters accept `client` for an ioredis instance and `expiry` or `windowMs`.
-  limiterStore = new RedisStore({ client: redisClient, expiry: windowSeconds });
-} catch (err) {
-  // Fallback to the lightweight custom store we added earlier
-  try {
-    limiterStore = new RedisRateLimitStore(redisClient, windowSeconds);
-  } catch (innerErr) {
-    console.error("Failed to initialize Redis rate-limit store:", innerErr);
-  }
-}
 
 const limiter = rateLimit({
   windowMs: config.rateLimitWindowMs,
@@ -326,35 +300,6 @@ app.post(
   },
 );
 
-// Playground fee-bump endpoint — open CORS, dedicated IP rate limit (10/min)
-const playgroundLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 10,
-  message: {
-    error: "Playground rate limit reached. Try again in a minute.",
-    code: "RATE_LIMITED",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.post(
-  "/playground/contract-import",
-  cors({ origin: "*" }),
-  playgroundLimiter,
-  (req: Request, res: Response, next: NextFunction) => {
-    void playgroundContractImportHandler(req, res).catch(next);
-  },
-);
-
-app.post(
-  "/playground/fee-bump",
-  cors({ origin: "*" }), // intentionally open: playground is public
-  playgroundLimiter,
-  (req: Request, res: Response, next: NextFunction) => {
-    void playgroundFeeBumpHandler(req, res, next);
-  },
-);
 
 // Fee bump endpoint
 app.post(
@@ -383,22 +328,6 @@ app.delete("/tenant", apiKeyMiddleware, (req: Request, res: Response, next: Next
   void deleteCurrentTenantHandler(req, res, next);
 });
 
-app.post("/test/add-transaction", (req: Request, res: Response) => {
-  const { hash, status = "pending", tenantId = "test-tenant" } = req.body;
-
-  if (!hash) {
-    res.status(400).json({ error: "Transaction hash is required" });
-    return;
-  }
-
-  transactionStore.addTransaction(hash, tenantId, status);
-  res.json({ message: `Transaction ${hash} added with status ${status}` });
-});
-
-app.get("/test/transactions", (req: Request, res: Response) => {
-  const transactions = transactionStore.getAllTransactions();
-  res.json({ transactions });
-});
 
 app.post(
   "/test/alerts/low-balance",
@@ -419,21 +348,18 @@ app.post(
   },
 );
 
-// ── RBAC: Admin user management ───────────────────────────────────────────────
 app.post("/admin/auth/login", adminLoginHandler);
 app.get("/admin/users", requirePermission("manage_users"), listAdminUsersHandler);
 app.post("/admin/users", requirePermission("manage_users"), createAdminUserHandler);
 app.patch("/admin/users/:id/role", requirePermission("manage_users"), updateAdminUserRoleHandler);
 app.delete("/admin/users/:id", requirePermission("manage_users"), deactivateAdminUserHandler);
 
-// ── API keys ──────────────────────────────────────────────────────────────────
 app.get("/admin/api-keys", requirePermission("view_api_keys"), listApiKeysHandler);
 app.post("/admin/api-keys", requirePermission("manage_api_keys"), upsertApiKeyHandler);
 app.patch("/admin/api-keys/:key/revoke", requirePermission("manage_api_keys"), revokeApiKeyHandler);
 app.patch("/admin/api-keys/:key/chains", requirePermission("manage_api_keys"), updateApiKeyChainsHandler);
 app.delete("/admin/api-keys/:key", requirePermission("manage_api_keys"), revokeApiKeyHandler);
 
-// ── Tenants & subscription tiers ──────────────────────────────────────────────
 app.get("/admin/subscription-tiers", requirePermission("view_tenants"), listSubscriptionTiersHandler);
 app.patch(
   "/admin/tenants/:tenantId/subscription-tier",
@@ -444,12 +370,10 @@ app.delete("/admin/tenants/:tenantId", (req: Request, res: Response, next: NextF
   void deleteTenantByAdminHandler(req, res, next);
 });
 
-// ── Signers ───────────────────────────────────────────────────────────────────
 app.get("/admin/signers", requirePermission("view_signers"), listSignersHandler(config));
 app.post("/admin/signers", requirePermission("manage_signers"), addSignerHandler(config));
 app.delete("/admin/signers/:publicKey", requirePermission("manage_signers"), removeSignerHandler(config));
 
-// ── Transactions & analytics ──────────────────────────────────────────────────
 app.get("/admin/prices", getPriceHandler);
 app.get("/admin/transactions", requirePermission("view_transactions"), listTransactionsHandler);
 app.get("/admin/analytics/spend-forecast", requirePermission("view_analytics"), getSpendForecastHandler(config));
@@ -463,10 +387,6 @@ app.post("/admin/webhooks/dlq/replay", requirePermission("manage_config"), repla
 app.post("/admin/webhooks/dlq/delete", requirePermission("manage_config"), deleteDlqHandler);
 app.get("/admin/audit-log/export", requirePermission("view_audit_logs"), exportAuditLogHandler);
 
-// Bridge settlement admin routes
-app.get("/admin/bridge-settlements", listBridgeSettlementsHandler);
-app.patch("/admin/bridge-settlements/:id/resolve", resolveBridgeSettlementHandler);
-app.post("/admin/bridge-settlements/:id/refund", refundBridgeSettlementHandler);
 
 // Notification centre routes (SSE must be registered before /:id/read)
 app.get("/admin/notifications/sse", (req: Request, res: Response) =>
@@ -543,7 +463,6 @@ app.post("/admin/rate-limit/manual-score", (req: Request, res: Response) => {
   })();
 });
 
-// Chain registry — supported network management (Phase 11)
 app.get("/admin/chains", (req: Request, res: Response) => {
   void listChainsHandler(req, res);
 });
@@ -557,90 +476,7 @@ app.delete("/admin/chains/:id", (req: Request, res: Response) => {
   void deleteChainHandler(req, res);
 });
 
-// Cross-chain state sync management (Phase 11)
-app.get(
-  "/admin/cross-chain-sync/history",
-  async (req: Request, res: Response) => {
-    try {
-      const history = await prisma.crossChainSync.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 50,
-      });
-      res.json({ history });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch sync history" });
-    }
-  },
-);
 
-app.get(
-  "/admin/cross-chain-sync/status",
-  async (req: Request, res: Response) => {
-    try {
-      // In a real implementation, we would query the contracts here.
-      // For the PoC, we'll return mock data or the last known state from the DB.
-      const lastSync = await prisma.crossChainSync.findFirst({
-        orderBy: { updatedAt: "desc" },
-      });
-
-      // Default or mock values if no sync has happened yet
-      let stellarCount = 0;
-      let evmCount = 0;
-
-      if (lastSync) {
-        const payload = JSON.parse(lastSync.payload);
-        const count = Number(payload.count);
-        stellarCount = count;
-        evmCount = count;
-      }
-
-      res.json({
-        stellarCount,
-        evmCount,
-        lastSyncAt: lastSync?.updatedAt || null,
-      });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch sync status" });
-    }
-  },
-);
-
-app.post(
-  "/admin/cross-chain-sync/increment-stellar",
-  async (req: Request, res: Response) => {
-    try {
-      logger.info("Manual Soroban increment triggered from admin");
-      // This would call the Soroban contract. For PoC, we simulate the success.
-      res.json({
-        ok: true,
-        message: "Soroban increment initiated",
-        txHash:
-          "MOCK_STELLAR_" + Math.random().toString(36).slice(2).toUpperCase(),
-      });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to initiate Soroban increment" });
-    }
-  },
-);
-
-app.post(
-  "/admin/cross-chain-sync/increment-evm",
-  async (req: Request, res: Response) => {
-    try {
-      logger.info("Manual EVM increment triggered from admin");
-      // This would call the EVM contract. For PoC, we simulate the success.
-      res.json({
-        ok: true,
-        message: "EVM increment initiated",
-        txHash: "0x" + Math.random().toString(16).slice(2).padStart(64, "0"),
-      });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to initiate EVM increment" });
-    }
-  },
-);
-
-// SAR (Suspicious Activity Report) routes — Phase 12: Compliance
 app.get("/admin/sar/stats", (req: Request, res: Response) => {
   void getSARStatsHandler(req, res);
 });
@@ -665,8 +501,9 @@ const PORT = process.env.PORT || 3000;
 let ledgerMonitor: ReturnType<typeof initializeLedgerMonitor> | null = null;
 let balanceMonitor: ReturnType<typeof initializeBalanceMonitor> | null = null;
 let incidentMonitor: ReturnType<typeof initializeIncidentMonitor> | null = null;
-let bridgeMonitor: ReturnType<typeof initializeBridgeMonitor> | null = null;
 let treasurySweeper: ReturnType<typeof initializeTreasurySweeper> | null = null;
+let digestWorker: ReturnType<typeof initializeDigestWorker> | null = null;
+let tenantErasureWorker: TenantErasureWorker | null = null;
 let shuttingDown = false;
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -690,8 +527,6 @@ async function shutdown(signal: string): Promise<void> {
   feeManager.stop();
   stopChainRegistryHotReload();
   stopOFACScreening();
-  crossChainSyncService.stop();
-  bridgeMonitor?.stop();
   treasurySweeper?.stop();
 
   if (server) {
@@ -834,50 +669,19 @@ try {
   );
 }
 
-// Chain registry hot-reload (reads enabled chains from DB on interval)
+// Treasury automated sweeper (Cold storage)
 try {
-  startChainRegistryHotReload();
+  treasurySweeper = initializeTreasurySweeper(config);
+  treasurySweeper.start();
+  logger.info("Treasury sweeper worker started");
 } catch (error) {
   logger.error(
     { ...serializeError(error) },
-    "Failed to start chain registry hot-reload",
+    "Failed to start treasury sweeper worker",
   );
 }
 
-// Cross-chain state sync PoC (Phase 11)
-try {
-  crossChainSyncService.start();
-} catch (error) {
-  logger.error(
-    { ...serializeError(error) },
-    "Failed to start cross-chain sync service",
-  );
-}
-
-// Bridge monitor (Phase 11: Multi-Chain)
-try {
-  bridgeMonitor = initializeBridgeMonitor(config, alertService);
-  bridgeMonitor.start();
-  logger.info("Bridge monitor worker started");
-} catch (error) {
-  logger.error(
-    { ...serializeError(error) },
-    "Failed to start bridge monitor",
-  );
-}
-  // Treasury automated sweeper (Cold storage)
-  try {
-    treasurySweeper = initializeTreasurySweeper(config);
-    treasurySweeper.start();
-    logger.info("Treasury sweeper worker started");
-  } catch (error) {
-    logger.error(
-      { ...serializeError(error) },
-      "Failed to start treasury sweeper worker",
-    );
-  }
-
-  server = app.listen(PORT, () => {
+server = app.listen(PORT, () => {
   logger.info(
     {
       fee_payers_loaded: config.feePayerAccounts.length,
