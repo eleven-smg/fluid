@@ -538,6 +538,8 @@ model AdminUser {
   passwordHash String
   role         String   @default("READ_ONLY") // SUPER_ADMIN | ADMIN | READ_ONLY | BILLING
   active       Boolean  @default(true)
+  sessionVersion Int    @default(0)
+  passwordChangedAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
