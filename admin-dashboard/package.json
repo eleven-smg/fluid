@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "format:check": "echo \"No format check configured\"",
+    "test": "node --test --experimental-test-isolation=none --experimental-strip-types components/skeletons/skeleton-utils.test.ts components/skeletons/skeletons.integration.test.ts",
     "test:e2e": "playwright test",
     "docs": "typedoc",
     "storybook": "storybook dev -p 6006",
