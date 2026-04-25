@@ -5,6 +5,7 @@ import type { Config } from "../config";
 import { HorizonFailoverClient } from "../horizon/failoverClient";
 import type { SlackNotifierLike } from "../services/slackNotifier";
 import { WebhookService } from "../services/webhook";
+import { MemoryProfiler } from "../utils/memoryProfiler";
 
 const logger = createLogger({ component: "ledger_monitor" });
 
@@ -14,6 +15,7 @@ export class LedgerMonitor {
   private pollInterval: NodeJS.Timeout | null = null;
   private readonly POLL_INTERVAL_MS = 30000;
   private readonly batchSize: number;
+  private memoryProfiler?: MemoryProfiler;
 
   constructor(
     config: Config,
@@ -30,6 +32,10 @@ export class LedgerMonitor {
     this.client = client || HorizonFailoverClient.fromConfig(config);
     this.webhookService = webhookService;
     this.batchSize = config.workers?.ledgerMonitorConcurrency ?? 5;
+    
+    if (config.workers?.memoryProfiling) {
+      this.memoryProfiler = new MemoryProfiler(config.workers.memoryProfiling);
+    }
   }
 
   start(): void {
@@ -42,6 +48,8 @@ export class LedgerMonitor {
     this.pollInterval = setInterval(() => {
       this.checkPendingTransactions();
     }, this.POLL_INTERVAL_MS);
+
+    this.memoryProfiler?.start();
   }
 
   stop(): void {
@@ -50,6 +58,7 @@ export class LedgerMonitor {
       this.pollInterval = null;
       logger.info("Stopped ledger monitor worker");
     }
+    this.memoryProfiler?.stop();
   }
 
   getNodeStatuses() {

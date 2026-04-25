@@ -4,8 +4,16 @@ vi.mock("../services/webhook", () => ({
   WebhookService: class {},
 }));
 
+vi.mock("../utils/memoryProfiler", () => ({
+  MemoryProfiler: vi.fn().mockImplementation(class {
+    start = vi.fn();
+    stop = vi.fn();
+  }),
+}));
+
 import { LedgerMonitor } from "./ledgerMonitor";
 import { transactionStore } from "./transactionStore";
+import { MemoryProfiler } from "../utils/memoryProfiler";
 
 describe("LedgerMonitor", () => {
   it("sends a Slack alert when Horizon confirms a transaction as failed", async () => {
@@ -84,5 +92,42 @@ describe("LedgerMonitor", () => {
     );
 
     expect((monitor as any).batchSize).toBe(12);
+  });
+
+  it("initializes and controls the memory profiler when enabled in config", () => {
+    const config = {
+      horizonSelectionStrategy: "priority",
+      horizonUrls: ["https://horizon-testnet.stellar.org"],
+      workers: {
+        memoryProfiling: {
+          enabled: true,
+          logIntervalMs: 1000,
+          heapSnapshotIntervalMs: 5000,
+          snapshotPath: "/tmp",
+        },
+      },
+    } as any;
+    const webhookService = {
+      dispatch: vi.fn().mockResolvedValue(undefined),
+    };
+    const client = {
+      getNodeStatuses: vi.fn().mockReturnValue([]),
+      getTransaction: vi.fn(),
+    };
+
+    const monitor = new LedgerMonitor(
+      config,
+      webhookService as any,
+      undefined,
+      client as any,
+    );
+
+    expect(MemoryProfiler).toHaveBeenCalledWith(config.workers.memoryProfiling);
+    
+    monitor.start();
+    expect((monitor as any).memoryProfiler.start).toHaveBeenCalled();
+    
+    monitor.stop();
+    expect((monitor as any).memoryProfiler.stop).toHaveBeenCalled();
   });
 });
