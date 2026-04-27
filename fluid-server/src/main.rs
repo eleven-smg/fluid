@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod error;
 mod horizon;
+mod logging;
 mod metrics;
 mod state;
 mod stellar;
@@ -25,8 +26,10 @@ use ai_query::{handle_ai_query, QueryRequest, QueryFilters};
 use config::load_config;
 use db::create_pool;
 use error::AppError;
+use fluid_server::archive::run_archival_job;
 use fluid_server::grpc::serve_grpc;
 use horizon::HorizonNodeStatus;
+use logging::init_logging_from_env;
 use sqlx::postgres::PgPool;
 use state::{
     iso_now, utc_day_start_ms, ApiKeyConfig, AppState, HealthFeePayer, RateLimitEntry,
@@ -47,7 +50,8 @@ struct HealthResponse {
 #[serde(deny_unknown_fields)]
 struct FeeBumpRequest {
     submit: Option<bool>,
-    token: Option<String>,
+    #[serde(rename = "token")]
+    _token: Option<String>,
     xdr: String,
 }
 
@@ -55,7 +59,8 @@ struct FeeBumpRequest {
 #[serde(deny_unknown_fields)]
 struct FeeBumpBatchRequest {
     submit: Option<bool>,
-    token: Option<String>,
+    #[serde(rename = "token")]
+    _token: Option<String>,
     xdrs: Vec<String>,
 }
 
@@ -176,12 +181,25 @@ async fn ai_query_handler(Json(req): Json<QueryRequest>) -> Json<QueryFilters> {
 async fn main() {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "fluid_server=info,tower_http=info".into()),
-        )
-        .init();
+    match init_logging_from_env() {
+        Ok(report) => {
+            info!(
+                "Logging initialized with provider={:?}, endpoint={:?}",
+                report.provider, report.endpoint
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "Failed to initialize log aggregation: {error}. Falling back to console logging."
+            );
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "fluid_server=info,tower_http=info".into()),
+                )
+                .try_init();
+        }
+    }
 
     if let Err(error) = run().await {
         error!("{}", error.message);
@@ -194,6 +212,42 @@ async fn run() -> Result<(), AppError> {
     let port = config.port;
     let allowed_origins = config.allowed_origins.clone();
     let state = AppState::new(config, &secrets)?;
+
+    // Create database pool for archival job
+    let db_pool = match create_pool().await {
+        Ok(pool) => {
+            info!("Database pool created successfully for archival job");
+            Some(Arc::new(pool))
+        }
+        Err(error) => {
+            error!("Database pool unavailable, archival job will not run: {error}");
+            None
+        }
+    };
+
+    // Start archival job if database pool is available
+    if let Some(pool) = db_pool.clone() {
+        tokio::spawn(async move {
+            info!("Starting transaction archival job...");
+            
+            // Run once on startup
+            if let Err(e) = run_archival_job(&pool).await {
+                error!("Initial archival job failed: {}", e);
+            }
+            
+            // Then every 30 days (30 * 24 * 3600 seconds)
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30 * 24 * 3600));
+            loop {
+                interval.tick().await;
+                info!("Running monthly transaction archival job...");
+                if let Err(e) = run_archival_job(&pool).await {
+                    error!("Monthly archival job failed: {}", e);
+                } else {
+                    info!("Monthly archival job completed successfully");
+                }
+            }
+        });
+    }
 
     // Background task: periodically revalidate signer accounts and refresh balances
     {
@@ -219,6 +273,7 @@ async fn run() -> Result<(), AppError> {
         .route("/dashboard", get(dashboard))
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/ai/query", post(ai_query_handler))
         .route("/verify-db", get(verify_db))
         .route("/fee-bump", post(fee_bump))
         .route("/fee-bump/batch", post(fee_bump_batch))
@@ -685,8 +740,8 @@ async fn check_api_key_rate_limit(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "RATE_LIMITED",
             format!(
-                "API key rate limit exceeded for {} ({} tier).",
-                mask_api_key(api_key.key),
+                "API key rate limit exceeded for {} ({}).",
+                api_key.name,
                 api_key.tier
             ),
         ));
@@ -753,4 +808,3 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     </script>
   </body>
 </html>"#;
-

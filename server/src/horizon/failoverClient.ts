@@ -5,6 +5,7 @@ import {
 import { createLogger, serializeError } from "../utils/logger";
 
 import StellarSdk from "@stellar/stellar-sdk";
+import { CircuitBreaker, CircuitBreakerStatus } from "./circuitBreaker";
 
 export type HorizonNodeState = "Active" | "Degraded" | "Inactive";
 
@@ -19,6 +20,7 @@ export interface HorizonNodeStatus {
   lastProbeAt?: string;
   retryAt?: string;
   lastResponseTimeMs?: number;
+  circuitBreaker?: CircuitBreakerStatus;
 }
 
 interface HorizonNodeRuntimeState {
@@ -26,6 +28,7 @@ interface HorizonNodeRuntimeState {
   status: HorizonNodeStatus;
   cooldownUntil: number;
   probeInFlight: boolean;
+  cb: CircuitBreaker;
 }
 
 export interface HorizonSubmissionResult {
@@ -132,6 +135,7 @@ export class HorizonFailoverClient {
       },
       cooldownUntil: 0,
       probeInFlight: false,
+      cb: new CircuitBreaker({ label: url }),
     }));
   }
 
@@ -143,7 +147,10 @@ export class HorizonFailoverClient {
   }
 
   getNodeStatuses (): HorizonNodeStatus[] {
-    return this.nodes.map((node) => ({ ...node.status }));
+    return this.nodes.map((node) => ({
+      ...node.status,
+      circuitBreaker: node.cb.getStatus(),
+    }));
   }
 
   async submitTransaction (
@@ -168,8 +175,21 @@ export class HorizonFailoverClient {
         "Submitting transaction via Horizon node"
       );
 
+      if (!node.cb.allowRequest()) {
+        logger.warn(
+          {
+            attempt: attemptNumber,
+            node_url: node.status.url,
+            circuit_breaker_state: node.cb.getState(),
+          },
+          "Circuit breaker open — skipping Horizon node"
+        );
+        continue;
+      }
+
       try {
         const result = await node.server.submitTransaction(transaction);
+        node.cb.recordSuccess();
         this.markNodeActive(node, Date.now() - startedAt);
         logger.info(
           {
@@ -191,6 +211,7 @@ export class HorizonFailoverClient {
         const disposition = classifySubmissionError(error);
 
         if (disposition === "final") {
+          node.cb.recordSuccess();
           logger.warn(
             {
               ...serializeError(error),
@@ -204,6 +225,7 @@ export class HorizonFailoverClient {
           throw error;
         }
 
+        node.cb.recordFailure();
         this.markNodeUnavailable(node, error, Date.now() - startedAt);
         logger.warn(
           {
@@ -213,6 +235,7 @@ export class HorizonFailoverClient {
             node_url: node.status.url,
             response_time_ms: node.status.lastResponseTimeMs,
             retry_at: node.status.retryAt,
+            circuit_breaker_state: node.cb.getState(),
           },
           "Transaction submission failed on Horizon node"
         );
@@ -230,9 +253,18 @@ export class HorizonFailoverClient {
     let lastError: unknown;
 
     for (const node of orderedNodes) {
+      if (!node.cb.allowRequest()) {
+        logger.warn(
+          { node_url: node.status.url, circuit_breaker_state: node.cb.getState() },
+          "Circuit breaker open — skipping Horizon node for transaction lookup"
+        );
+        continue;
+      }
+
       const startedAt = Date.now();
       try {
         const result = await node.server.transactions().transaction(hash).call();
+        node.cb.recordSuccess();
         this.markNodeActive(node, Date.now() - startedAt);
         return result;
       } catch (error: any) {
@@ -240,6 +272,7 @@ export class HorizonFailoverClient {
         const disposition = classifySubmissionError(error);
 
         if (disposition === "retryable") {
+          node.cb.recordFailure();
           this.markNodeUnavailable(node, error, Date.now() - startedAt);
           logger.warn(
             {
@@ -249,12 +282,14 @@ export class HorizonFailoverClient {
               response_time_ms: node.status.lastResponseTimeMs,
               retry_at: node.status.retryAt,
               tx_hash: hash,
+              circuit_breaker_state: node.cb.getState(),
             },
             "Transaction lookup failed on Horizon node"
           );
           continue;
         }
 
+        node.cb.recordSuccess();
         throw error;
       }
     }
@@ -268,9 +303,18 @@ export class HorizonFailoverClient {
     let lastError: unknown;
 
     for (const node of orderedNodes) {
+      if (!node.cb.allowRequest()) {
+        logger.warn(
+          { node_url: node.status.url, circuit_breaker_state: node.cb.getState() },
+          "Circuit breaker open — skipping Horizon node for account lookup"
+        );
+        continue;
+      }
+
       const startedAt = Date.now();
       try {
         const result = await node.server.loadAccount(publicKey);
+        node.cb.recordSuccess();
         this.markNodeActive(node, Date.now() - startedAt);
         return result;
       } catch (error: any) {
@@ -278,12 +322,14 @@ export class HorizonFailoverClient {
         const statusCode = getStatusCode(error);
 
         if (statusCode === 404) {
+          node.cb.recordSuccess();
           throw error;
         }
 
         const disposition = classifySubmissionError(error);
 
         if (disposition === "retryable") {
+          node.cb.recordFailure();
           this.markNodeUnavailable(node, error, Date.now() - startedAt);
           logger.warn(
             {
@@ -293,12 +339,14 @@ export class HorizonFailoverClient {
               response_time_ms: node.status.lastResponseTimeMs,
               retry_at: node.status.retryAt,
               public_key: publicKey,
+              circuit_breaker_state: node.cb.getState(),
             },
             "Account lookup failed on Horizon node"
           );
           continue;
         }
 
+        node.cb.recordSuccess();
         throw error;
       }
     }
@@ -393,15 +441,18 @@ export class HorizonFailoverClient {
 
     try {
       await candidate.server.serverInfo();
+      candidate.cb.recordSuccess();
       this.markNodeActive(candidate, Date.now() - startedAt);
       logger.info(
         {
           node_url: candidate.status.url,
           response_time_ms: candidate.status.lastResponseTimeMs,
+          circuit_breaker_state: candidate.cb.getState(),
         },
         "Horizon recovery probe succeeded"
       );
     } catch (error) {
+      candidate.cb.recordFailure();
       this.markNodeUnavailable(candidate, error, Date.now() - startedAt);
       logger.warn(
         {
@@ -409,6 +460,7 @@ export class HorizonFailoverClient {
           node_url: candidate.status.url,
           response_time_ms: candidate.status.lastResponseTimeMs,
           retry_at: candidate.status.retryAt,
+          circuit_breaker_state: candidate.cb.getState(),
         },
         "Horizon recovery probe failed"
       );
