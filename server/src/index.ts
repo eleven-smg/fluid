@@ -52,7 +52,10 @@ import {
   createCheckoutSessionHandler,
   stripeWebhookHandler,
 } from "./handlers/stripe";
-import { getHorizonFailoverClient } from "./horizon/failoverClient";
+import {
+  getHorizonFailoverClient,
+  initializeHorizonFailoverClient,
+} from "./horizon/failoverClient";
 import { apiKeyMiddleware } from "./middleware/apiKeys";
 import { soc2RequestLogger } from "./middleware/soc2Logger";
 import {
@@ -133,6 +136,15 @@ import {
   startChainRegistryHotReload,
   stopChainRegistryHotReload,
 } from "./services/chainRegistryService";
+import { createBullBoard } from "@bull-board/api";
+import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
+import { ExpressAdapter } from "@bull-board/express";
+import { feeBumpQueue, feeBumpQueueEvents } from "./queues/feeBumpQueue";
+import { initializeFeeBumpWorker } from "./workers/feeBumpWorker";
+import {
+  initializePartitionMaintenanceWorker,
+  PartitionMaintenanceWorker,
+} from "./workers/partitionMaintenanceWorker";
 
 const logger = createLogger({ component: "server" });
 const config = loadConfig();
@@ -359,6 +371,19 @@ app.post(
   },
 );
 
+// Bull Board — job queue admin UI
+const bullBoardAdapter = new ExpressAdapter();
+bullBoardAdapter.setBasePath("/admin/queues");
+createBullBoard({
+  queues: [new BullMQAdapter(feeBumpQueue)],
+  serverAdapter: bullBoardAdapter,
+});
+app.use(
+  "/admin/queues",
+  requireAuthenticatedAdmin(),
+  bullBoardAdapter.getRouter(),
+);
+
 app.post("/admin/auth/login", adminLoginHandler);
 app.post("/admin/auth/change-password", requireAuthenticatedAdmin(), changeAdminPasswordHandler);
 app.get("/admin/users", requirePermission("manage_users"), listAdminUsersHandler);
@@ -516,6 +541,9 @@ let incidentMonitor: ReturnType<typeof initializeIncidentMonitor> | null = null;
 let treasurySweeper: ReturnType<typeof initializeTreasurySweeper> | null = null;
 let digestWorker: ReturnType<typeof initializeDigestWorker> | null = null;
 let tenantErasureWorker: TenantErasureWorker | null = null;
+let treasuryRefillWorker: ReturnType<typeof initializeTreasuryRefill> | null = null;
+let feeBumpWorker: ReturnType<typeof initializeFeeBumpWorker> | null = null;
+let partitionMaintenanceWorker: PartitionMaintenanceWorker | null = null;
 let shuttingDown = false;
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -525,6 +553,8 @@ async function shutdown(signal: string): Promise<void> {
   }
 
   shuttingDown = true;
+  logger.info(`Received ${signal}, starting graceful shutdown...`);
+
   await slackNotifier.notifyServerLifecycle({
     detail: `Signal received: ${signal}`,
     phase: "stop",
@@ -540,21 +570,38 @@ async function shutdown(signal: string): Promise<void> {
   stopChainRegistryHotReload();
   stopOFACScreening();
   treasurySweeper?.stop();
+  partitionMaintenanceWorker?.stop();
+  await feeBumpWorker?.close();
+  await feeBumpQueueEvents.close();
+  await feeBumpQueue.close();
 
   if (server) {
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2_000).unref();
+    server.close(() => {
+      logger.info("HTTP server closed");
+      process.exit(0);
+    });
+    setTimeout(() => {
+      logger.warn("HTTP server close timeout, forcing exit");
+      process.exit(0);
+    }, 5000).unref();
     return;
   }
 
   process.exit(0);
 }
 
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+
 // --- Background Workers ---
-let ledgerMonitorInstance: any = null;
 if (config.horizonUrls.length > 0) {
   try {
-    ledgerMonitorInstance = initializeLedgerMonitor(config);
+    const horizonFailoverClient = initializeHorizonFailoverClient(config);
+    ledgerMonitorInstance = initializeLedgerMonitor(
+      config,
+      undefined,
+      horizonFailoverClient,
+    );
     ledgerMonitorInstance.start();
     logger.info("Ledger monitor worker started");
   } catch (error) {
@@ -609,9 +656,9 @@ if (pagerDutyNotifier.isConfigured() || fcmNotifier.isConfigured()) {
 }
 
 try {
-  const treasuryRefill = initializeTreasuryRefill(config);
-  if (treasuryRefill) {
-    treasuryRefill.start();
+  treasuryRefillWorker = initializeTreasuryRefill(config);
+  if (treasuryRefillWorker) {
+    treasuryRefillWorker.start();
     logger.info("Treasury refill worker started");
   }
 } catch (error) {
@@ -690,6 +737,25 @@ try {
   logger.error(
     { ...serializeError(error) },
     "Failed to start treasury sweeper worker",
+  );
+}
+
+try {
+  feeBumpWorker = initializeFeeBumpWorker(config);
+} catch (error) {
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start fee-bump queue worker",
+  );
+}
+
+try {
+  partitionMaintenanceWorker = initializePartitionMaintenanceWorker();
+  partitionMaintenanceWorker.start();
+} catch (error) {
+  logger.error(
+    { ...serializeError(error) },
+    "Failed to start partition maintenance worker",
   );
 }
 

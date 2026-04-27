@@ -3,6 +3,9 @@
   "version": "0.1.1",
   "description": "Fluid client library for gasless Stellar transactions with Web Worker support",
   "main": "dist/index.js",
+  "bin": {
+    "fluid": "./dist/cli.js"
+  },
   "browser": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -32,6 +35,11 @@
     "format:check": "echo \"No format check configured\"",
     "docs": "typedoc",
     "test": "vitest run",
+    "sandbox:write-compose": "ts-node src/sandbox/writeLocalSandboxCompose.ts",
+    "sandbox:up": "npm run sandbox:write-compose && docker compose -f src/sandbox/docker-compose.local.yml up -d --build",
+    "sandbox:down": "docker compose -f src/sandbox/docker-compose.local.yml down --remove-orphans",
+    "sandbox:logs": "docker compose -f src/sandbox/docker-compose.local.yml logs -f --tail=200",
+    "sandbox:ps": "docker compose -f src/sandbox/docker-compose.local.yml ps",
     "demo": "python -m http.server 8080",
     "demo:sac-transfer-xdr": "ts-node src/examples/sacTransferXdr.ts",
     "demo:wait-confirmation": "ts-node src/demo/waitForConfirmation.ts",
@@ -50,6 +58,7 @@
   ],
   "author": "",
   "license": "ISC",
+  "sideEffects": false,
   "dependencies": {
     "@stellar/stellar-sdk": "^11.3.0",
     "dotenv": "^16.3.1"

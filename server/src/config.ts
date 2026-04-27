@@ -95,6 +95,12 @@ export interface KycConfig {
 
 export interface WorkerConfig {
   ledgerMonitorConcurrency: number;
+  memoryProfiling: {
+    enabled: boolean;
+    logIntervalMs: number;
+    heapSnapshotIntervalMs: number;
+    snapshotPath?: string;
+  };
 }
 
 export interface Config {
@@ -410,6 +416,12 @@ function loadWorkerConfig(): WorkerConfig {
       1,
       64,
     ),
+    memoryProfiling: {
+      enabled: parseBoolean(process.env.FLUID_MEMORY_PROFILING_ENABLED, false),
+      logIntervalMs: parsePositiveInt(process.env.FLUID_MEMORY_PROFILING_LOG_INTERVAL_MS, 60000),
+      heapSnapshotIntervalMs: parsePositiveInt(process.env.FLUID_MEMORY_PROFILING_SNAPSHOT_INTERVAL_MS, 3600000),
+      snapshotPath: process.env.FLUID_MEMORY_PROFILING_SNAPSHOT_PATH?.trim() || undefined,
+    },
   };
 }
 
