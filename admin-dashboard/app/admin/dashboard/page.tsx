@@ -16,6 +16,8 @@ import { getFeeMultiplierData } from "@/lib/fee-multiplier-data";
 import { FeeEstimatorWidget } from "@/components/dashboard/FeeEstimatorWidget";
 import { ExpenseBreakdown } from "@/components/dashboard/ExpenseBreakdown";
 import { getExpenseBreakdownData } from "@/lib/expense-breakdown-data";
+import { getTreasuryCriticalBannerState } from "@/lib/treasury-critical-banner";
+import { AlertTriangle } from "lucide-react";
 
 export default async function AdminDashboard() {
   const session = await auth();
@@ -24,6 +26,7 @@ export default async function AdminDashboard() {
   const spendForecast = await getSpendForecastData();
   const feeMultiplier = await getFeeMultiplierData();
   const expenseBreakdown = await getExpenseBreakdownData();
+  const treasuryCriticalState = getTreasuryCriticalBannerState(spendForecast);
 
   return (
     <div className="min-h-screen bg-background">
@@ -65,6 +68,29 @@ export default async function AdminDashboard() {
       </div>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        {treasuryCriticalState.isCritical && (
+          <section className="mb-6 rounded-2xl border border-rose-300 bg-rose-50 p-5 shadow-sm" aria-live="assertive">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-rose-700" />
+              <div>
+                <h2 className="text-base font-bold text-rose-900">{treasuryCriticalState.title}</h2>
+                <p className="mt-1 text-sm text-rose-800">{treasuryCriticalState.summary}</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-rose-700">
+                  {treasuryCriticalState.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+                <Link
+                  href="/admin/billing"
+                  className="mt-3 inline-flex min-h-9 items-center justify-center rounded-full border border-rose-400 bg-white px-4 text-xs font-black uppercase tracking-wider text-rose-800 transition hover:bg-rose-100"
+                >
+                  Add Funds Now
+                </Link>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Stat Cards */}
         <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatCard
@@ -115,6 +141,7 @@ export default async function AdminDashboard() {
 
         {/* Tables */}
         <section className="mt-6 space-y-6">
+          <div className="flex flex-wrap gap-3">
             <Link
               href="/admin/billing"
               className="inline-flex min-h-11 items-center justify-center rounded-full border border-primary/30 bg-primary/10 px-6 text-sm font-black text-primary transition hover:shadow-lg hover:-translate-y-0.5"

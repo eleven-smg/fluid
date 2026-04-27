@@ -159,3 +159,21 @@ npm run build
 npm run dev
 npm run demo:sac-transfer-xdr
 ```
+
+## Local Sandbox Docker Compose
+
+Use one command to spin up a local sandbox with Fluid server, PostgreSQL, and a mock Horizon endpoint:
+
+```bash
+npm run sandbox:up
+```
+
+The compose file is generated at `src/sandbox/docker-compose.local.yml`.
+
+Useful commands:
+
+```bash
+npm run sandbox:ps
+npm run sandbox:logs
+npm run sandbox:down
+```
