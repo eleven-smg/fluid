@@ -58,6 +58,7 @@
   ],
   "author": "",
   "license": "ISC",
+  "sideEffects": false,
   "dependencies": {
     "@stellar/stellar-sdk": "^11.3.0",
     "dotenv": "^16.3.1"

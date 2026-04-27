@@ -10,6 +10,8 @@ export default defineConfig([
     clean: false,
     outDir: "dist",
     platform: "browser",
+    treeshake: true,
+    splitting: true,
     skipNodeModulesBundle: false,
     esbuildOptions(options) {
       options.define = {

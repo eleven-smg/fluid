@@ -11,6 +11,8 @@ import {
 import {
   collectTelemetry,
   getTelemetryConfig,
+  reportDiagnostic,
+  TelemetryConfig,
 } from "./telemetry";
 import {
   FluidConfigurationError,
@@ -29,6 +31,8 @@ export interface FluidClientConfig {
   stellarSdk?: unknown;
   enableTelemetry?: boolean;
   telemetryEndpoint?: string;
+  enableDiagnostics?: boolean;
+  diagnosticsEndpoint?: string;
 }
 
 export interface FeeBumpResponse {
@@ -102,6 +106,7 @@ export class FluidClient {
     string,
     { failures: number; failedUntil: number }
   >();
+  private readonly telemetryConfig: TelemetryConfig;
 
   constructor(config: FluidClientConfig) {
     this.serverUrls = this.normalizeServerUrls(config);
@@ -123,11 +128,13 @@ export class FluidClient {
     }
 
     // Initialize telemetry if enabled
-    const telemetryConfig = getTelemetryConfig({
+    this.telemetryConfig = getTelemetryConfig({
       enabled: config.enableTelemetry,
       endpoint: config.telemetryEndpoint,
+      diagnosticsEnabled: config.enableDiagnostics,
+      diagnosticsEndpoint: config.diagnosticsEndpoint,
     });
-    collectTelemetry(telemetryConfig);
+    collectTelemetry(this.telemetryConfig);
   }
 
   private serializeTransaction(input: FeeBumpRequestInput): string {
@@ -473,6 +480,14 @@ export class FluidClient {
       results.push(await this.signOnMainThread(transaction, keypair));
     }
     return results;
+  }
+
+  /**
+   * Reports a bug or diagnostic information to the Fluid telemetry service.
+   * Only active if enableDiagnostics is set to true in the configuration.
+   */
+  reportBug(message: string, context?: any): void {
+    reportDiagnostic(this.telemetryConfig, message, "error", context);
   }
 
   terminate(): void {

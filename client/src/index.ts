@@ -27,3 +27,5 @@ export {
   resolveStellarSdk,
   toTransactionXdr,
 } from "./stellarCompatibility";
+
+export * from "./testUtils/FluidMockClient";
