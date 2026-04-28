@@ -1,4 +1,4 @@
-import StellarSdk from "@stellar/stellar-sdk";
+import { join } from "path";
 
 interface NativeSignerBinding {
   signPayload(secret: string, payload: Buffer): Promise<Buffer>;
@@ -16,20 +16,25 @@ interface NativeSignerBinding {
   preflightSoroban(rpcUrl: string, transactionXdr: string): Promise<string>;
 }
 
-// 🛡️ Bypassing the .node binary file for standard Node.js environments
-export const nativeSigner: NativeSignerBinding = {
-  async signPayload(secret: string, payload: Buffer): Promise<Buffer> {
-    const keypair = StellarSdk.Keypair.fromSecret(secret);
-    // Standard ed25519 signing using the Stellar SDK
-    const signature = keypair.sign(payload);
-    return Buffer.from(signature);
-  },
+const nativeModulePath = join(__dirname, "../../fluid_signer.node");
 
-  async signPayloadFromVault(): Promise<Buffer> {
-    throw new Error("Vault signing is disabled in this local environment.");
-  },
+function unavailableNativeSigner(reason: string): NativeSignerBinding {
+  const fail = async (): Promise<never> => {
+    throw new Error(`Native signer is unavailable: ${reason}`);
+  };
 
-  async preflightSoroban(): Promise<string> {
-    throw new Error("Soroban preflight is disabled in this local environment.");
-  }
-};
+  return {
+    signPayload: fail,
+    signPayloadFromVault: fail,
+    preflightSoroban: fail,
+  };
+}
+
+let loadedNativeSigner: NativeSignerBinding;
+try {
+  loadedNativeSigner = require(nativeModulePath) as NativeSignerBinding;
+} catch (error: any) {
+  loadedNativeSigner = unavailableNativeSigner(error?.message ?? "unknown load error");
+}
+
+export const nativeSigner = loadedNativeSigner;

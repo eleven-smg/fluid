@@ -7,6 +7,11 @@ export interface SponsoredTransactionRecord {
   createdAt: Date;
 }
 
+export interface SponsoredTransactionTotals {
+  totalFeeStroops: number;
+  totalTransactions: number;
+}
+
 function getUtcDayRange(date: Date): { start: Date; end: Date } {
   const start = new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
@@ -21,8 +26,7 @@ export async function recordSponsoredTransaction(
   feeStroops: number,
   createdAt: Date = new Date()
 ): Promise<SponsoredTransactionRecord> {
-  // 🛠️ Bypass: Added (prisma as any)
-  const record = await (prisma as any).sponsoredTransaction.create({
+  const record = await prisma.sponsoredTransaction.create({
     data: { tenantId, feeStroops: BigInt(feeStroops), createdAt },
   });
   return {
@@ -38,10 +42,19 @@ export async function getTenantDailySpendStroops(
   now: Date = new Date()
 ): Promise<number> {
   const { start, end } = getUtcDayRange(now);
-  // 🛠️ Bypass: Added (prisma as any)
-  const result = await (prisma as any).sponsoredTransaction.aggregate({
+  const result = await prisma.sponsoredTransaction.aggregate({
     where: { tenantId, createdAt: { gte: start, lt: end } },
     _sum: { feeStroops: true },
   });
   return Number(result._sum.feeStroops ?? 0);
+}
+
+export async function getTenantDailyTransactionCount(
+  tenantId: string,
+  now: Date = new Date()
+): Promise<number> {
+  const { start, end } = getUtcDayRange(now);
+  return prisma.sponsoredTransaction.count({
+    where: { tenantId, createdAt: { gte: start, lt: end } },
+  });
 }

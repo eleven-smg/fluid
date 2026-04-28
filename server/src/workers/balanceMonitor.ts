@@ -1,8 +1,13 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { Config } from "../config";
-import { AlertService } from "../services/alertService";
+import {
+  AlertService,
+  resolveLowBalanceCheckIntervalMs,
+  resolveLowBalanceThresholdXlm,
+} from "../services/alertService";
+import { BaseWorker } from "./baseWorker";
 
-export class BalanceMonitor {
+export class BalanceMonitor extends BaseWorker {
   private readonly server: StellarSdk.Horizon.Server;
   private intervalHandle: NodeJS.Timeout | null = null;
 
@@ -10,6 +15,7 @@ export class BalanceMonitor {
     private readonly config: Config,
     private readonly alertService: AlertService,
   ) {
+    super();
     if (!config.horizonUrl) {
       throw new Error("Horizon URL is required for balance monitoring");
     }
@@ -18,63 +24,69 @@ export class BalanceMonitor {
   }
 
   start(): void {
-    const threshold = this.config.alerting.lowBalanceThresholdXlm;
-    console.log("[BalanceMonitor] Starting balance monitor worker");
-    console.log(
-      `[BalanceMonitor] Poll interval: ${this.config.alerting.checkIntervalMs}ms`,
+    const threshold = resolveLowBalanceThresholdXlm(
+      this.config.alerting.lowBalanceThresholdXlm,
     );
-    console.log(`[BalanceMonitor] Threshold: ${threshold} XLM`);
+    const checkIntervalMs = resolveLowBalanceCheckIntervalMs(
+      this.config.alerting.checkIntervalMs,
+    );
+    this.logger.info(
+      {
+        poll_interval_ms: checkIntervalMs,
+        threshold_xlm: threshold,
+      },
+      "Starting balance monitor worker",
+    );
 
-    void this.checkBalances();
+    void this.runCycle(() => this.checkBalances());
     this.intervalHandle = setInterval(() => {
-      void this.checkBalances();
-    }, this.config.alerting.checkIntervalMs);
+      void this.runCycle(() => this.checkBalances());
+    }, checkIntervalMs);
   }
 
-  stop(): void {
-    if (!this.intervalHandle) {
-      return;
+  protected clearScheduledTasks(): void {
+    if (this.intervalHandle) {
+      clearInterval(this.intervalHandle);
+      this.intervalHandle = null;
     }
-
-    clearInterval(this.intervalHandle);
-    this.intervalHandle = null;
-    console.log("[BalanceMonitor] Stopped balance monitor worker");
   }
 
   async checkBalances(): Promise<void> {
-    const threshold = this.config.alerting.lowBalanceThresholdXlm;
+    const threshold = resolveLowBalanceThresholdXlm(
+      this.config.alerting.lowBalanceThresholdXlm,
+    );
     if (threshold === undefined) {
       return;
     }
 
-    try {
-      for (const account of this.config.feePayerAccounts) {
-        const balanceXlm = await this.getNativeBalance(account.publicKey);
-        console.log(
-          `[BalanceMonitor] ${account.publicKey} balance: ${balanceXlm.toFixed(7)} XLM`,
-        );
+    for (const account of this.config.feePayerAccounts) {
+      if (this.isShuttingDown) break;
 
-        if (balanceXlm < threshold) {
-          const wasSent = await this.alertService.sendLowBalanceAlert({
-            accountPublicKey: account.publicKey,
-            balanceXlm,
-            thresholdXlm: threshold,
-            networkPassphrase: this.config.networkPassphrase,
-            horizonUrl: this.config.horizonUrl,
-            checkedAt: new Date(),
-          });
+      const balanceXlm = await this.getNativeBalance(account.publicKey);
+      this.logger.debug(
+        { account: account.publicKey, balance_xlm: balanceXlm },
+        "Checked account balance",
+      );
 
-          if (wasSent) {
-            console.warn(
-              `[BalanceMonitor] Low balance alert sent for ${account.publicKey}`,
-            );
-          }
-        } else {
-          this.alertService.markBalanceRecovered(account.publicKey);
+      if (balanceXlm < threshold) {
+        const wasSent = await this.alertService.sendLowBalanceAlert({
+          accountPublicKey: account.publicKey,
+          balanceXlm,
+          thresholdXlm: threshold,
+          networkPassphrase: this.config.networkPassphrase,
+          horizonUrl: this.config.horizonUrl,
+          checkedAt: new Date(),
+        });
+
+        if (wasSent) {
+          this.logger.warn(
+            { account: account.publicKey, balance_xlm: balanceXlm },
+            "Low balance alert sent",
+          );
         }
+      } else {
+        this.alertService.markBalanceRecovered(account.publicKey);
       }
-    } catch (error) {
-      console.error("[BalanceMonitor] Failed to check fee payer balances:", error);
     }
   }
 
@@ -87,6 +99,7 @@ export class BalanceMonitor {
     return nativeBalance ? Number.parseFloat(nativeBalance.balance) : 0;
   }
 }
+
 
 let balanceMonitor: BalanceMonitor | null = null;
 

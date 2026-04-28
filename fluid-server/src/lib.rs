@@ -1,5 +1,31 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
+mod blocklist;
+mod heuristics;
+pub mod archive;
+
+use blocklist::Blocklist;
+use heuristics::RequestTracker;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static BLOCKLIST: OnceLock<Mutex<Blocklist>> = OnceLock::new();
+static TRACKER: OnceLock<Mutex<RequestTracker>> = OnceLock::new();
+
+fn now() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0) as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+}
+
 
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
@@ -11,6 +37,17 @@ use stellar_xdr::curr::{
     TransactionSignaturePayloadTaggedTransaction, TransactionV0, Uint256, VecM, WriteXdr,
 };
 use wasm_bindgen::prelude::*;
+
+// These modules are primarily used by the native server binary.
+// We expose them from the library so unit tests + coverage tools can exercise them.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod error;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod grpc;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod logging;
 
 const MAX_SIGNATURES: usize = 20;
 
@@ -65,11 +102,13 @@ impl WasmSigningResult {
 }
 
 #[derive(Debug)]
-enum SigningError {
+pub enum SigningError {
     InvalidSecretKey(String),
     InvalidEnvelope(String),
     UnsupportedEnvelope(String),
     SignatureOverflow,
+    AccountBlocked(String),
+    SuspiciousActivity(String),
 }
 
 impl fmt::Display for SigningError {
@@ -82,11 +121,25 @@ impl fmt::Display for SigningError {
                 f,
                 "transaction already contains the maximum of 20 signatures"
             ),
+            Self::AccountBlocked(message) => write!(f, "account is blocked: {message}"),
+            Self::SuspiciousActivity(message) => write!(f, "suspicious activity detected: {message}"),
         }
     }
 }
 
 impl std::error::Error for SigningError {}
+
+impl From<&str> for SigningError {
+    fn from(s: &str) -> Self {
+        Self::AccountBlocked(s.to_string())
+    }
+}
+
+impl From<String> for SigningError {
+    fn from(s: String) -> Self {
+        Self::AccountBlocked(s)
+    }
+}
 
 #[wasm_bindgen(js_name = signTransactionXdr)]
 pub fn sign_transaction_xdr(
@@ -122,8 +175,41 @@ pub fn sign_transaction_xdr_internal(
     unsigned_xdr: &str,
     secret_key: &str,
     network_passphrase: &str,
-) -> Result<SigningResult, Box<dyn std::error::Error>> {
+) -> Result<SigningResult, SigningError> {
     let signer = signer_context(secret_key)?;
+
+    let public_key = signer.public_key.clone();
+    let blocklist = BLOCKLIST.get_or_init(|| Mutex::new(Blocklist::new()));
+    let tracker = TRACKER.get_or_init(|| Mutex::new(RequestTracker::new()));
+
+    {
+        let blocklist_guard = blocklist
+            .lock()
+            .map_err(|_| SigningError::SuspiciousActivity("blocklist lock poisoned".to_string()))?;
+        if blocklist_guard.is_blocked(&public_key, now()) {
+            return Err("Account is blocked".into());
+        }
+    }
+
+    let suspicious = {
+        let mut tracker_guard = tracker
+            .lock()
+            .map_err(|_| SigningError::SuspiciousActivity("tracker lock poisoned".to_string()))?;
+        tracker_guard.is_suspicious(&public_key, now())
+    };
+
+    if suspicious {
+        let mut blocklist_guard = blocklist
+            .lock()
+            .map_err(|_| SigningError::SuspiciousActivity("blocklist lock poisoned".to_string()))?;
+        blocklist_guard.add(
+            public_key.clone(),
+            "Suspicious activity detected".to_string(),
+            now(),
+        );
+        return Err("Account flagged and blocked".into());
+    }
+
     let mut envelope = parse_transaction_envelope(unsigned_xdr)?;
     let tx_hash = transaction_hash(&envelope, network_passphrase)?;
     let signed_envelope = append_signature(&mut envelope, &signer, &tx_hash)?;
@@ -393,5 +479,53 @@ mod tests {
         );
 
         assert!(matches!(result, Err(SigningError::SignatureOverflow)));
+    }
+
+    #[test]
+    fn signature_hint_uses_last_4_bytes() {
+        let bytes = [
+            0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29, 30, 31,
+        ];
+        assert_eq!(signature_hint(&bytes), [28, 29, 30, 31]);
+    }
+
+    #[test]
+    fn sha256_produces_expected_digest() {
+        // Known SHA-256("abc") test vector.
+        let digest = sha256(b"abc");
+        assert_eq!(
+            hex::encode(digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn envelope_signature_count_counts_all_envelope_variants() {
+        let mut env = parse_transaction_envelope(UNSIGNED_XDR).unwrap();
+        assert_eq!(envelope_signature_count(&env), 0);
+
+        // Append a signature and ensure count increments.
+        let signer = signer_context(TEST_SECRET_KEY).unwrap();
+        let tx_hash = transaction_hash(&env, TEST_NETWORK_PASSPHRASE).unwrap();
+        let _ = append_signature(&mut env, &signer, &tx_hash).unwrap();
+        assert_eq!(envelope_signature_count(&env), 1);
+    }
+
+    #[test]
+    fn push_signature_appends_when_under_limit() {
+        let signatures: VecM<DecoratedSignature, 20> = Vec::<DecoratedSignature>::new()
+            .try_into()
+            .expect("empty vec should fit");
+        let decorated = DecoratedSignature {
+            hint: SignatureHint([0, 0, 0, 0]),
+            signature: Signature(
+                vec![1u8, 2, 3, 4]
+                    .try_into()
+                    .expect("signature bytes should fit BytesM<64>"),
+            ),
+        };
+        let updated = push_signature(&signatures, decorated).unwrap();
+        assert_eq!(updated.len(), 1);
     }
 }

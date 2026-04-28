@@ -1,30 +1,56 @@
 import { NextFunction, Request, Response } from "express";
 import { ApiKeyConfig, maskApiKey } from "./apiKeys";
-import { incrWithExpiry } from "../utils/redis";
+import { consumeLeakyBucket } from "../utils/redis";
+import { TenantUsageTracker } from "../services/tenantUsageTracker";
 
-// Fallback in-memory bucket if Redis is unavailable.
-interface UsageEntry {
-  count: number;
-  resetTime: number;
+// When STATELESS_MODE=true the in-memory fallback is disabled so that all rate
+// limit state lives exclusively in Redis. This is required for horizontal
+// scaling: multiple Node API replicas sharing a Redis instance will agree on
+// per-key counters, whereas independent in-memory maps would diverge.
+const STATELESS_MODE = process.env.STATELESS_MODE === "true";
+
+// Fallback in-memory leaky bucket used only when Redis is unavailable and
+// STATELESS_MODE is false (single-instance / dev deployments).
+interface LeakyBucketEntry {
+  tat: number; // Theoretical Arrival Time
 }
 
-const usageByApiKey = new Map<string, UsageEntry>();
+const usageByApiKey = new Map<string, LeakyBucketEntry>();
+const usageTracker = new TenantUsageTracker();
 
-function getUsageEntry(apiKeyConfig: ApiKeyConfig): UsageEntry {
+function consumeFallbackBucket(apiKeyConfig: ApiKeyConfig): { allowed: boolean; remaining: number; retryAfterMs: number; resetMs: number } {
   const now = Date.now();
-  const existingEntry = usageByApiKey.get(apiKeyConfig.key);
+  const capacity = apiKeyConfig.rateLimit;
+  const windowMs = apiKeyConfig.windowMs;
+  const emissionInterval = windowMs / capacity;
 
-  if (!existingEntry || now >= existingEntry.resetTime) {
-    const freshEntry: UsageEntry = {
-      count: 0,
-      resetTime: now + apiKeyConfig.windowMs,
-    };
-
-    usageByApiKey.set(apiKeyConfig.key, freshEntry);
-    return freshEntry;
+  let entry = usageByApiKey.get(apiKeyConfig.key);
+  if (!entry) {
+    entry = { tat: now };
+    usageByApiKey.set(apiKeyConfig.key, entry);
   }
 
-  return existingEntry;
+  const tat = Math.max(entry.tat, now);
+  const newTat = tat + emissionInterval;
+
+  if (newTat - now > windowMs) {
+    // Rejected
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterMs: Math.ceil(newTat - now - windowMs),
+      resetMs: Math.ceil(tat - now)
+    };
+  }
+
+  // Accepted
+  entry.tat = newTat;
+  return {
+    allowed: true,
+    remaining: Math.floor((windowMs - (newTat - now)) / emissionInterval),
+    retryAfterMs: 0,
+    resetMs: Math.ceil(newTat - now)
+  };
 }
 
 export async function apiKeyRateLimit(
@@ -41,29 +67,37 @@ export async function apiKeyRateLimit(
     return;
   }
 
-  const windowSeconds = Math.max(1, Math.ceil(apiKeyConfig.windowMs / 1000));
+  const rateLimit = apiKeyConfig.rateLimit;
+  const windowMs = apiKeyConfig.windowMs;
 
-  // Try Redis atomic counter first.
+  // Try Redis leaky bucket first.
   try {
     const key = `rl:${apiKeyConfig.key}`;
-    const result = await incrWithExpiry(key, windowSeconds);
+    const result = await consumeLeakyBucket(key, rateLimit, windowMs);
 
     if (result) {
-      const { count, ttl } = result;
+      const { allowed, remaining, retryAfterMs, resetMs } = result;
 
-      res.setHeader("X-RateLimit-Limit", apiKeyConfig.maxRequests.toString());
-      res.setHeader("X-RateLimit-Remaining", Math.max(apiKeyConfig.maxRequests - count, 0).toString());
-      res.setHeader("X-RateLimit-Reset", Math.ceil((Date.now() / 1000) + ttl).toString());
+      res.setHeader("X-RateLimit-Limit", rateLimit.toString());
+      res.setHeader("X-RateLimit-Remaining", remaining.toString());
+      res.setHeader("X-RateLimit-Reset", Math.ceil((Date.now() + resetMs) / 1000).toString());
 
-      if (count > apiKeyConfig.maxRequests) {
+      if (!allowed) {
+        // Record violation for intelligent rate limiting
+        usageTracker.recordViolation(apiKeyConfig.tenantId).catch(() => { }); // Don't block on errors
+
         res.status(429).json({
-          error: `API key rate limit exceeded for ${maskApiKey(apiKeyConfig.key)} (${apiKeyConfig.tier} tier).`,
+          error: `API key rate limit exceeded for ${maskApiKey(apiKeyConfig.key)} (${apiKeyConfig.tierName} tier).`,
           tier: apiKeyConfig.tier,
-          limit: apiKeyConfig.maxRequests,
-          retryAfterSeconds: Math.max(ttl, 0),
+          tierName: apiKeyConfig.tierName,
+          limit: rateLimit,
+          retryAfterSeconds: Math.max(Math.ceil(retryAfterMs / 1000), 1),
         });
         return;
       }
+
+      // Record successful request for intelligent rate limiting
+      usageTracker.recordRequest(apiKeyConfig.tenantId).catch(() => { }); // Don't block on errors
 
       // allowed
       next();
@@ -73,27 +107,39 @@ export async function apiKeyRateLimit(
     // If Redis helper threw, we'll fall back to in-memory below.
   }
 
-  // Fallback to in-memory windowing if Redis is unavailable
-  const usageEntry = getUsageEntry(apiKeyConfig);
-  const now = Date.now();
-
-  res.setHeader("X-RateLimit-Limit", apiKeyConfig.maxRequests.toString());
-  res.setHeader(
-    "X-RateLimit-Remaining",
-    Math.max(apiKeyConfig.maxRequests - usageEntry.count - 1, 0).toString()
-  );
-  res.setHeader("X-RateLimit-Reset", Math.ceil(usageEntry.resetTime / 1000).toString());
-
-  if (usageEntry.count >= apiKeyConfig.maxRequests) {
-    res.status(429).json({
-      error: `API key rate limit exceeded for ${maskApiKey(apiKeyConfig.key)} (${apiKeyConfig.tier} tier).`,
-      tier: apiKeyConfig.tier,
-      limit: apiKeyConfig.maxRequests,
-      retryAfterSeconds: Math.max(Math.ceil((usageEntry.resetTime - now) / 1000), 0),
+  // In stateless mode Redis is mandatory — refuse to serve rather than allow
+  // divergent per-instance counters to break rate limit guarantees.
+  if (STATELESS_MODE) {
+    res.status(503).json({
+      error: "Rate limit service unavailable. Redis is required in STATELESS_MODE.",
+      code: "SERVICE_UNAVAILABLE",
     });
     return;
   }
 
-  usageEntry.count += 1;
+  // Fallback to in-memory windowing if Redis is unavailable
+  const fallbackResult = consumeFallbackBucket(apiKeyConfig);
+
+  res.setHeader("X-RateLimit-Limit", rateLimit.toString());
+  res.setHeader("X-RateLimit-Remaining", fallbackResult.remaining.toString());
+  res.setHeader("X-RateLimit-Reset", Math.ceil((Date.now() + fallbackResult.resetMs) / 1000).toString());
+
+  if (!fallbackResult.allowed) {
+    // Record violation for intelligent rate limiting
+    usageTracker.recordViolation(apiKeyConfig.tenantId).catch(() => { }); // Don't block on errors
+
+    res.status(429).json({
+      error: `API key rate limit exceeded for ${maskApiKey(apiKeyConfig.key)} (${apiKeyConfig.tierName} tier).`,
+      tier: apiKeyConfig.tier,
+      tierName: apiKeyConfig.tierName,
+      limit: rateLimit,
+      retryAfterSeconds: Math.max(Math.ceil(fallbackResult.retryAfterMs / 1000), 1),
+    });
+    return;
+  }
+
+  // Record successful request for intelligent rate limiting
+  usageTracker.recordRequest(apiKeyConfig.tenantId).catch(() => { }); // Don't block on errors
+
   next();
 }

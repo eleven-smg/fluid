@@ -25,6 +25,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -55,6 +56,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,11 +496,17 @@ name = "fluid-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+
+ "base64",
+
  "base64 0.22.1",
  "chrono",
  "dotenvy",
+
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "hex",
  "reqwest",
  "serde",
@@ -677,10 +685,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "wasip2",
  "wasip3",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1233,9 +1243,9 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "mio"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
+checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
 dependencies = [
  "libc",
  "wasi",
@@ -1243,6 +1253,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1270,6 +1281,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2300,6 +2312,7 @@ checksum = "ee1832fb50c651ad10f734aaf5d31ca5acdfb197a6ecda64d93fcdb8885af913"
 dependencies = [
  "crate-git-revision",
  "data-encoding",
+
 ]
 
 [[package]]
@@ -2310,6 +2323,7 @@ checksum = "084afcb0d458c3d5d5baa2d294b18f881e62cc258ef539d8fdf68be7dbe45520"
 dependencies = [
  "crate-git-revision",
  "data-encoding",
+
  "heapless",
 ]
 
@@ -2347,6 +2361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2358,6 +2373,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2378,6 +2394,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "synstructure"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2463,6 +2480,7 @@ dependencies = [
 ]
 
 [[package]]
+
 name = "thread_local"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2722,6 +2740,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da36089a805484bcccfffe0739803392c8298778a2d2f09febf76fac5ad9025b"
 
 [[package]]
+
+name = "wasm-bindgen"
+version = "0.2.115"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6523d69017b7633e396a89c5efab138161ed5aafcbc8d3e5c5a42ae38f50495a"
+dependencies = [
+ "cfg-if",
+ "once_cell",
+ "rustversion",
+ "wasm-bindgen-macro",
+ "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-macro"
+version = "0.2.115"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e3a6c758eb2f701ed3d052ff5737f5bfe6614326ea7f3bbac7156192dc32e67"
+
 name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2772,7 +2809,17 @@ dependencies = [
  "getrandom 0.4.2",
  "js-sys",
  "serde_core",
+ "uuid-rng-internal",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid-rng-internal"
+version = "1.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02b76dc0e3c64be846ad2fd1378656e7de2120530d1e83d8f20ca6a0cdba01de"
+dependencies = [
+ "getrandom 0.4.2",
 ]
 
 [[package]]
@@ -2864,6 +2911,7 @@ name = "wasm-bindgen-macro"
 version = "0.2.114"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18a2d50fcf105fb33bb15f00e7a77b772945a2ee45dcf454961fd843e74c18e6"
+
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -2871,9 +2919,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.114"
+version = "0.2.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03ce4caeaac547cdf713d280eda22a730824dd11e6b8c3ca9e42247b25c631e3"
+checksum = "921de2737904886b52bcbb237301552d05969a6f9c40d261eb0533c8b055fedf"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -2884,9 +2932,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.114"
+version = "0.2.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75a326b8c223ee17883a4251907455a2431acc2791c98c26279376490c378c16"
+checksum = "a93e946af942b58934c604527337bad9ae33ba1d5c6900bbb41c2c07c2364a93"
 dependencies = [
  "unicode-ident",
 ]
