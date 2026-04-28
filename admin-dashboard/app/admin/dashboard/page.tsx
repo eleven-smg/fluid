@@ -18,6 +18,7 @@ import { ExpenseBreakdown } from "@/components/dashboard/ExpenseBreakdown";
 import { getExpenseBreakdownData } from "@/lib/expense-breakdown-data";
 import { getTreasuryCriticalBannerState } from "@/lib/treasury-critical-banner";
 import { AlertTriangle } from "lucide-react";
+import { LiveTransactionFeed } from "@/components/dashboard/LiveTransactionFeed";
 
 export default async function AdminDashboard() {
   const session = await auth();
@@ -179,6 +180,7 @@ export default async function AdminDashboard() {
               Open transaction history
             </Link>
           </div>
+          <LiveTransactionFeed />
           <TransactionsTable transactions={transactions} />
           <SignersTable signers={signers} />
           <UsageLeaderboard rows={tenantUsage} />
